@@ -20,6 +20,23 @@ func (t *Token) Release() {
 	t.loadshedder.durationTracker.record(duration)
 }
 
+// Config configures a Loadshedder.
+type Config struct {
+	// Limit is the maximum number of concurrent requests allowed.
+	// Must be positive.
+	Limit int
+
+	// MaxWaitTime enables QoS-based rejection: only reject requests if the
+	// projected wait time exceeds this duration.
+	// If zero (default), QoS is disabled and requests are rejected immediately when over limit.
+	MaxWaitTime time.Duration
+
+	// EMAAlpha is the smoothing factor for the exponential moving average
+	// of request durations. Must be between 0 and 1 (exclusive).
+	// Default is 0.1.
+	EMAAlpha float64
+}
+
 // Loadshedder is a framework-agnostic concurrency limiter.
 // It tracks concurrent operations and determines whether new operations
 // should be accepted or rejected based on the configured limit and QoS settings.
@@ -32,20 +49,22 @@ type Loadshedder struct {
 	maxWaitTime time.Duration // If > 0, only reject if projected wait exceeds this
 }
 
-// New creates a new concurrency limiter with the specified limit.
-// The limit must be positive.
-func New(limit int, opts ...Option) *Loadshedder {
-	if limit <= 0 {
+// New creates a new concurrency limiter with the specified configuration.
+func New(cfg Config) *Loadshedder {
+	if cfg.Limit <= 0 {
 		panic("loadshedder: limit must be positive")
 	}
 
-	l := &Loadshedder{
-		limit:           limit,
-		durationTracker: newDurationTracker(0.1), // Default alpha = 0.1
+	// Set default EMA alpha if not specified
+	alpha := cfg.EMAAlpha
+	if alpha == 0 {
+		alpha = 0.1
 	}
 
-	for _, opt := range opts {
-		opt(l)
+	l := &Loadshedder{
+		limit:           cfg.Limit,
+		maxWaitTime:     cfg.MaxWaitTime,
+		durationTracker: newDurationTracker(alpha),
 	}
 
 	return l
@@ -104,23 +123,4 @@ func (l *Loadshedder) calculateProjectedWaitTime(current int) time.Duration {
 
 	queueDepth := current - l.limit
 	return time.Duration(queueDepth) * avgDuration
-}
-
-// Option configures a Loadshedder.
-type Option func(*Loadshedder)
-
-// WithMaxWaitTime enables QoS-based rejection: only reject requests if the
-// projected wait time exceeds the specified duration.
-func WithMaxWaitTime(maxWaitTime time.Duration) Option {
-	return func(l *Loadshedder) {
-		l.maxWaitTime = maxWaitTime
-	}
-}
-
-// WithEMAAlpha sets the smoothing factor for the exponential moving average
-// of request durations. Alpha must be between 0 and 1 (exclusive).
-func WithEMAAlpha(alpha float64) Option {
-	return func(l *Loadshedder) {
-		l.durationTracker = newDurationTracker(alpha)
-	}
 }

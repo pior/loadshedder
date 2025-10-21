@@ -13,7 +13,7 @@ func TestNew_PanicsWithZeroLimit(t *testing.T) {
 			t.Error("expected panic with zero limit")
 		}
 	}()
-	New(0)
+	New(Config{Limit: 0})
 }
 
 func TestNew_PanicsWithNegativeLimit(t *testing.T) {
@@ -22,11 +22,11 @@ func TestNew_PanicsWithNegativeLimit(t *testing.T) {
 			t.Error("expected panic with negative limit")
 		}
 	}()
-	New(-1)
+	New(Config{Limit: -1})
 }
 
 func TestLoadshedder_AcceptsUnderLimit(t *testing.T) {
-	ls := New(5)
+	ls := New(Config{Limit: 5})
 
 	for i := 0; i < 5; i++ {
 		token := ls.Acquire()
@@ -38,7 +38,7 @@ func TestLoadshedder_AcceptsUnderLimit(t *testing.T) {
 }
 
 func TestLoadshedder_RejectsOverLimit(t *testing.T) {
-	ls := New(2)
+	ls := New(Config{Limit: 2})
 
 	// Acquire 2 slots (at limit)
 	token1 := ls.Acquire()
@@ -71,7 +71,7 @@ func TestLoadshedder_RejectsOverLimit(t *testing.T) {
 
 func TestLimiter_ConcurrentRequests(t *testing.T) {
 	limit := 10
-	ls := New(limit)
+	ls := New(Config{Limit: limit})
 
 	maxConcurrent := atomic.Int64{}
 	currentConcurrent := atomic.Int64{}
@@ -131,7 +131,10 @@ func TestLimiter_ConcurrentRequests(t *testing.T) {
 }
 
 func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
-	ls := New(2, WithMaxWaitTime(500*time.Millisecond))
+	ls := New(Config{
+		Limit:       2,
+		MaxWaitTime: 500 * time.Millisecond,
+	})
 
 	// Establish an average duration
 	for i := 0; i < 5; i++ {
@@ -188,7 +191,10 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 }
 
 func TestLimiter_QoS_RejectsWithHighWait(t *testing.T) {
-	ls := New(2, WithMaxWaitTime(50*time.Millisecond))
+	ls := New(Config{
+		Limit:       2,
+		MaxWaitTime: 50 * time.Millisecond,
+	})
 
 	// Establish a long average duration
 	for i := 0; i < 5; i++ {
@@ -223,12 +229,11 @@ func TestLimiter_QoS_RejectsWithHighWait(t *testing.T) {
 	token2.Release()
 }
 
-func TestWithEMAAlpha_PanicsWithInvalidValues(t *testing.T) {
+func TestConfig_EMAAlphaPanicsWithInvalidValues(t *testing.T) {
 	tests := []struct {
 		name  string
 		alpha float64
 	}{
-		{"zero", 0.0},
 		{"negative", -0.1},
 		{"one", 1.0},
 		{"greater than one", 1.5},
@@ -241,13 +246,16 @@ func TestWithEMAAlpha_PanicsWithInvalidValues(t *testing.T) {
 					t.Errorf("expected panic with alpha=%f", tt.alpha)
 				}
 			}()
-			New(10, WithEMAAlpha(tt.alpha))
+			New(Config{
+				Limit:    10,
+				EMAAlpha: tt.alpha,
+			})
 		})
 	}
 }
 
 func BenchmarkLimiter(b *testing.B) {
-	ls := New(100)
+	ls := New(Config{Limit: 100})
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -261,7 +269,10 @@ func BenchmarkLimiter(b *testing.B) {
 }
 
 func BenchmarkLimiter_WithQoS(b *testing.B) {
-	ls := New(100, WithMaxWaitTime(100*time.Millisecond))
+	ls := New(Config{
+		Limit:       100,
+		MaxWaitTime: 100 * time.Millisecond,
+	})
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

@@ -59,7 +59,9 @@ import (
 
 func main() {
     // Create a loadshedder with a concurrency limit of 100
-    ls := loadshedder.New(100)
+    ls := loadshedder.New(loadshedder.Config{
+        Limit: 100,
+    })
 
     // Create HTTP middleware
     mw := loadshedder.NewMiddleware(ls)
@@ -86,7 +88,9 @@ import (
 
 func main() {
     // Create a loadshedder
-    ls := loadshedder.New(100)
+    ls := loadshedder.New(loadshedder.Config{
+        Limit: 100,
+    })
 
     // Create Gin middleware
     mw := ginloadshedder.New(ls)
@@ -134,7 +138,10 @@ func (r *metricsReporter) OnCompleted(req *http.Request, current, limit int, dur
 }
 
 func main() {
-    ls := loadshedder.New(100)
+    ls := loadshedder.New(loadshedder.Config{
+        Limit: 100,
+    })
+
     mw := loadshedder.NewMiddleware(ls, loadshedder.WithReporter(&metricsReporter{}))
 
     handler := mw.Handler(http.DefaultServeMux)
@@ -158,8 +165,10 @@ import (
 func main() {
     // Enable QoS mode: only reject if projected wait > 200ms
     // This allows brief bursts over the limit without rejecting requests
-    ls := loadshedder.New(100,
-        loadshedder.WithMaxWaitTime(200*time.Millisecond))
+    ls := loadshedder.New(loadshedder.Config{
+        Limit:       100,
+        MaxWaitTime: 200 * time.Millisecond,
+    })
 
     mw := loadshedder.NewMiddleware(ls)
 
@@ -183,7 +192,13 @@ func main() {
 ### Core Loadshedder
 
 ```go
-func New(limit int, opts ...Option) *Loadshedder
+type Config struct {
+    Limit       int           // Maximum concurrent requests (required, must be positive)
+    MaxWaitTime time.Duration // Enable QoS if > 0 (optional, default: 0)
+    EMAAlpha    float64       // EMA smoothing factor (optional, default: 0.1, must be 0 < alpha < 1)
+}
+
+func New(cfg Config) *Loadshedder
 ```
 
 Creates a new framework-agnostic concurrency limiter.
@@ -195,10 +210,6 @@ Creates a new framework-agnostic concurrency limiter.
 
 **Token Methods:**
 - `Release()` - Release the token when operation completes. Call in a defer.
-
-**Options:**
-- `WithMaxWaitTime(maxWaitTime time.Duration)` - Enable QoS mode
-- `WithEMAAlpha(alpha float64)` - Set EMA smoothing factor (0 < alpha < 1)
 
 ### HTTP Middleware
 
@@ -257,6 +268,14 @@ The core `Loadshedder` has no framework dependencies, making it usable with any 
 ### Separate Module for Gin
 
 The Gin middleware lives in a separate Go module (`ginloadshedder`) to avoid adding Gin as a dependency to the core library. This keeps the core library lightweight.
+
+### Config Struct Pattern
+
+The library uses a `Config` struct for configuration instead of functional options. This provides:
+- Clear, self-documenting configuration
+- Easy to see all available options in one place
+- Simple to add new configuration fields
+- No need to memorize option function names
 
 ### Token-Based API
 

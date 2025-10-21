@@ -28,7 +28,7 @@ func (tr *testReporter) OnCompleted(r *http.Request, current, limit int, duratio
 }
 
 func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
-	limiter := New(5)
+	limiter := New(Config{Limit: 5})
 	mw := NewMiddleware(limiter)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +47,7 @@ func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
 }
 
 func TestMiddleware_RejectsOverLimit(t *testing.T) {
-	limiter := New(2)
+	limiter := New(Config{Limit: 2})
 	mw := NewMiddleware(limiter)
 
 	blocker := make(chan struct{})
@@ -88,7 +88,7 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 }
 
 func TestMiddleware_WithReporter(t *testing.T) {
-	limiter := New(2)
+	limiter := New(Config{Limit: 2})
 	reporter := &testReporter{}
 	mw := NewMiddleware(limiter, WithReporter(reporter))
 
@@ -118,7 +118,7 @@ func TestMiddleware_WithReporter(t *testing.T) {
 }
 
 func TestMiddleware_CustomRejectionHandler(t *testing.T) {
-	limiter := New(1)
+	limiter := New(Config{Limit: 1})
 	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom", "rejection")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -167,7 +167,7 @@ func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 }
 
 func BenchmarkMiddleware(b *testing.B) {
-	limiter := New(100)
+	limiter := New(Config{Limit: 100})
 	mw := NewMiddleware(limiter)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

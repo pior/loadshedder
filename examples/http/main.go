@@ -25,11 +25,11 @@ func (r *exampleReporter) OnCompleted(req *http.Request, current, limit int, dur
 }
 
 func main() {
-	// Create a limiter with a concurrency limit of 10
-	limiter := loadshedder.New(10)
+	// Create a loadshedder with a concurrency limit of 10
+	ls := loadshedder.New(loadshedder.Config{Limit: 10})
 
 	// Create HTTP middleware with reporter for observability
-	mw := loadshedder.NewMiddleware(limiter, loadshedder.WithReporter(&exampleReporter{}))
+	mw := loadshedder.NewMiddleware(ls, loadshedder.WithReporter(&exampleReporter{}))
 
 	// Wrap your handler
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
