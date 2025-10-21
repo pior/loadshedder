@@ -1,7 +1,6 @@
 package loadshedder
 
 import (
-	"math"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -16,9 +15,8 @@ type Loadshedder struct {
 	rejectionHandler http.Handler
 
 	// QoS: Projected wait time limiting
-	maxWaitTime time.Duration     // If > 0, only reject if projected wait exceeds this
-	avgDuration atomic.Uint64     // Exponential moving average of request duration (nanoseconds)
-	emaAlpha    float64           // Smoothing factor for EMA (default 0.1)
+	maxWaitTime     time.Duration      // If > 0, only reject if projected wait exceeds this
+	durationTracker *durationTracker   // Tracks exponential moving average of request durations
 }
 
 // New creates a new Loadshedder middleware with the specified concurrency limit.
@@ -31,7 +29,7 @@ func New(limit int, opts ...Option) *Loadshedder {
 	ls := &Loadshedder{
 		limit:            limit,
 		rejectionHandler: defaultRejectionHandler(),
-		emaAlpha:         0.1, // Default smoothing factor
+		durationTracker:  newDurationTracker(0.1), // Default alpha = 0.1
 	}
 
 	for _, opt := range opts {
@@ -64,7 +62,7 @@ func (ls *Loadshedder) Middleware(next http.Handler) http.Handler {
 					defer func() {
 						current := ls.current.Add(-1)
 						duration := time.Since(start)
-						ls.updateAvgDuration(duration)
+						ls.durationTracker.record(duration)
 
 						if ls.reporter != nil {
 							ls.reporter.OnCompleted(r, int(current), ls.limit, duration)
@@ -99,7 +97,7 @@ func (ls *Loadshedder) Middleware(next http.Handler) http.Handler {
 		defer func() {
 			current := ls.current.Add(-1)
 			duration := time.Since(start)
-			ls.updateAvgDuration(duration)
+			ls.durationTracker.record(duration)
 
 			if ls.reporter != nil {
 				ls.reporter.OnCompleted(r, int(current), ls.limit, duration)
@@ -124,41 +122,14 @@ func (ls *Loadshedder) calculateProjectedWaitTime(current int) time.Duration {
 		return 0
 	}
 
-	avgNanos := ls.avgDuration.Load()
-	if avgNanos == 0 {
+	avgDuration := ls.durationTracker.average()
+	if avgDuration == 0 {
 		// No historical data yet, assume zero wait
 		return 0
 	}
 
 	queueDepth := current - ls.limit
-	projectedNanos := uint64(queueDepth) * avgNanos
-	return time.Duration(projectedNanos)
-}
-
-// updateAvgDuration updates the exponential moving average of request duration.
-// EMA formula: EMA_new = alpha * current + (1 - alpha) * EMA_old
-func (ls *Loadshedder) updateAvgDuration(duration time.Duration) {
-	nanos := uint64(duration.Nanoseconds())
-
-	for {
-		oldAvg := ls.avgDuration.Load()
-
-		var newAvg uint64
-		if oldAvg == 0 {
-			// First measurement, use it directly
-			newAvg = nanos
-		} else {
-			// Apply exponential moving average
-			// Using integer arithmetic to avoid float precision issues
-			alpha := ls.emaAlpha
-			newAvgFloat := alpha*float64(nanos) + (1-alpha)*float64(oldAvg)
-			newAvg = uint64(math.Round(newAvgFloat))
-		}
-
-		if ls.avgDuration.CompareAndSwap(oldAvg, newAvg) {
-			break
-		}
-	}
+	return time.Duration(queueDepth) * avgDuration
 }
 
 // defaultRejectionHandler returns a simple 429 response with Retry-After header.

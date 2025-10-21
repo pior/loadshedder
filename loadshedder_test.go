@@ -574,12 +574,11 @@ func TestQoS_EMAUpdates(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	// Check that avgDuration was updated
-	avgNanos := ls.avgDuration.Load()
-	if avgNanos == 0 {
+	avgDuration := ls.durationTracker.average()
+	if avgDuration == 0 {
 		t.Error("expected avgDuration to be updated after request")
 	}
 
-	avgDuration := time.Duration(avgNanos)
 	if avgDuration < 100*time.Millisecond {
 		t.Errorf("expected avgDuration >= 100ms, got %v", avgDuration)
 	}
@@ -595,8 +594,8 @@ func TestQoS_EMAUpdates(t *testing.T) {
 	handler2.ServeHTTP(rec2, req2)
 
 	// EMA should have moved toward the new value
-	newAvgNanos := ls.avgDuration.Load()
-	if newAvgNanos <= avgNanos {
+	newAvgDuration := ls.durationTracker.average()
+	if newAvgDuration <= avgDuration {
 		t.Error("expected avgDuration to increase after slower request")
 	}
 }
@@ -605,7 +604,7 @@ func TestQoS_ProjectedWaitTimeCalculation(t *testing.T) {
 	ls := New(5)
 
 	// Manually set avgDuration to 100ms for predictable testing
-	ls.avgDuration.Store(uint64(100 * time.Millisecond))
+	ls.durationTracker.avgDuration.Store(uint64(100 * time.Millisecond))
 
 	tests := []struct {
 		current  int

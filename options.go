@@ -46,9 +46,7 @@ func WithMaxWaitTime(maxWaitTime time.Duration) Option {
 // This option is typically used for fine-tuning the QoS behavior.
 func WithEMAAlpha(alpha float64) Option {
 	return func(ls *Loadshedder) {
-		if alpha <= 0 || alpha >= 1 {
-			panic("loadshedder: emaAlpha must be between 0 and 1 (exclusive)")
-		}
-		ls.emaAlpha = alpha
+		// Replace the duration tracker with a new one using the specified alpha
+		ls.durationTracker = newDurationTracker(alpha)
 	}
 }
