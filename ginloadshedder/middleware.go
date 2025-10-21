@@ -64,7 +64,9 @@ func New(ls *loadshedder.Loadshedder, opts ...Option) *Middleware {
 func (m *Middleware) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := m.loadshedder.Acquire()
-		if token == nil {
+		defer token.Release()
+
+		if !token.Accepted() {
 			// Request rejected
 			if m.reporter != nil {
 				m.reporter.OnRejected(c, m.loadshedder.Current(), m.loadshedder.Limit())
@@ -80,8 +82,9 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 		}
 
 		defer func() {
-			duration := time.Since(token.start)
-			token.Release()
+			// Get duration from start embedded in token
+			start := token.start
+			duration := time.Since(start)
 
 			if m.reporter != nil {
 				m.reporter.OnCompleted(c, m.loadshedder.Current(), m.loadshedder.Limit(), duration)

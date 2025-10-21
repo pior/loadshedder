@@ -60,7 +60,9 @@ func NewMiddleware(loadshedder *Loadshedder, opts ...MiddlewareOption) *Middlewa
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := m.loadshedder.Acquire()
-		if token == nil {
+		defer token.Release()
+
+		if !token.Accepted() {
 			// Request rejected
 			if m.reporter != nil {
 				m.reporter.OnRejected(r, m.loadshedder.Current(), m.loadshedder.Limit())
@@ -75,8 +77,9 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		}
 
 		defer func() {
-			duration := time.Since(token.start)
-			token.Release()
+			// Get duration from start embedded in token
+			start := token.start
+			duration := time.Since(start)
 
 			if m.reporter != nil {
 				m.reporter.OnCompleted(r, m.loadshedder.Current(), m.loadshedder.Limit(), duration)

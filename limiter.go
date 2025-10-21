@@ -5,16 +5,27 @@ import (
 	"time"
 )
 
-// Token represents an acquired slot in the loadshedder.
-// It must be released by calling Release() when the operation completes.
+// Token represents the result of an acquisition attempt.
+// Always call Release() when done, typically in a defer.
 type Token struct {
 	loadshedder *Loadshedder
 	start       time.Time
+	accepted    bool
 }
 
-// Release releases the token back to the loadshedder.
+// Accepted returns true if the request was accepted (slot acquired).
+// Returns false if the request was rejected due to load.
+func (t Token) Accepted() bool {
+	return t.accepted
+}
+
+// Release releases the token back to the loadshedder if it was accepted.
+// Safe to call even if the token was not accepted (does nothing).
 // This should be called when the operation completes, typically in a defer.
-func (t *Token) Release() {
+func (t Token) Release() {
+	if !t.accepted {
+		return
+	}
 	duration := time.Since(t.start)
 	t.loadshedder.current.Add(-1)
 	t.loadshedder.durationTracker.record(duration)
@@ -71,10 +82,11 @@ func New(cfg Config) *Loadshedder {
 }
 
 // Acquire attempts to acquire a slot for processing.
-// Returns a Token if the slot was acquired, nil if the request should be rejected.
-// If a token is returned, the caller MUST call token.Release() when done, typically in a defer.
-func (l *Loadshedder) Acquire() *Token {
+// Always returns a Token. Check token.Accepted() to see if the request was accepted.
+// Always call token.Release() when done, typically in a defer.
+func (l *Loadshedder) Acquire() Token {
 	current := l.current.Add(1)
+	now := time.Now()
 
 	// Check if we exceeded the limit
 	if current > int64(l.limit) {
@@ -85,17 +97,17 @@ func (l *Loadshedder) Acquire() *Token {
 			// Only reject if projected wait exceeds the threshold
 			if projectedWait <= l.maxWaitTime {
 				// Accept even though we're over the limit
-				return &Token{loadshedder: l, start: time.Now()}
+				return Token{loadshedder: l, start: now, accepted: true}
 			}
 		}
 
 		// Release the slot immediately (hard rejection)
 		l.current.Add(-1)
-		return nil
+		return Token{loadshedder: l, start: now, accepted: false}
 	}
 
 	// Accepted (under limit)
-	return &Token{loadshedder: l, start: time.Now()}
+	return Token{loadshedder: l, start: now, accepted: true}
 }
 
 // Current returns the current number of concurrent operations.

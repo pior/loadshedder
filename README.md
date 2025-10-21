@@ -204,12 +204,13 @@ func New(cfg Config) *Loadshedder
 Creates a new framework-agnostic concurrency limiter.
 
 **Methods:**
-- `Acquire() *Token` - Attempt to acquire a slot. Returns a token if acquired, nil if rejected.
+- `Acquire() Token` - Acquire a slot. Always returns a Token. Check `token.Accepted()` to see if request was accepted.
 - `Current() int` - Get current concurrency level.
 - `Limit() int` - Get the configured limit.
 
 **Token Methods:**
-- `Release()` - Release the token when operation completes. Call in a defer.
+- `Accepted() bool` - Returns true if the request was accepted (slot acquired), false if rejected.
+- `Release()` - Release the token. Safe to call even if not accepted. Always call in a defer.
 
 ### HTTP Middleware
 
@@ -279,7 +280,12 @@ The library uses a `Config` struct for configuration instead of functional optio
 
 ### Token-Based API
 
-The `Acquire()` method returns a `Token` that automatically tracks the start time. This eliminates the need for users to manually pass durations to `Release()` and ensures accurate duration tracking.
+The `Acquire()` method always returns a `Token` value (not a pointer) that:
+- Automatically tracks the start time for duration measurement
+- Provides an `Accepted()` method to check if the request was accepted
+- Has a `Release()` method that's safe to call unconditionally in a defer
+
+This design eliminates nil checks and makes the API safer and more convenient. You can always defer `token.Release()` immediately after acquiring, regardless of whether the request was accepted.
 
 ### No X-RateLimit-* Headers
 

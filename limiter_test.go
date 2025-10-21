@@ -30,10 +30,10 @@ func TestLoadshedder_AcceptsUnderLimit(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		token := ls.Acquire()
-		if token == nil {
+		defer token.Release()
+		if !token.Accepted() {
 			t.Errorf("request %d: expected acquisition to succeed", i)
 		}
-		token.Release()
 	}
 }
 
@@ -42,27 +42,27 @@ func TestLoadshedder_RejectsOverLimit(t *testing.T) {
 
 	// Acquire 2 slots (at limit)
 	token1 := ls.Acquire()
-	if token1 == nil {
+	if !token1.Accepted() {
 		t.Fatal("expected first acquisition to succeed")
 	}
 	token2 := ls.Acquire()
-	if token2 == nil {
+	if !token2.Accepted() {
 		t.Fatal("expected second acquisition to succeed")
 	}
 
 	// Third acquisition should fail
 	token3 := ls.Acquire()
-	if token3 != nil {
+	if token3.Accepted() {
 		t.Error("expected third acquisition to fail")
-		token3.Release()
 	}
+	token3.Release() // Safe to call even if not accepted
 
 	// Release one slot
 	token1.Release()
 
 	// Now should be able to acquire again
 	token4 := ls.Acquire()
-	if token4 == nil {
+	if !token4.Accepted() {
 		t.Error("expected acquisition to succeed after release")
 	}
 	token2.Release()
@@ -87,7 +87,7 @@ func TestLimiter_ConcurrentRequests(t *testing.T) {
 			defer wg.Done()
 
 			token := ls.Acquire()
-			if token == nil {
+			if !token.Accepted() {
 				rejected.Add(1)
 				return
 			}
@@ -139,7 +139,7 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 	// Establish an average duration
 	for i := 0; i < 5; i++ {
 		token := ls.Acquire()
-		if token == nil {
+		if !token.Accepted() {
 			t.Fatal("expected acquisition to succeed")
 		}
 		time.Sleep(50 * time.Millisecond) // Simulate fast requests
@@ -155,7 +155,7 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			token := ls.Acquire()
-			if token == nil {
+			if !token.Accepted() {
 				t.Error("expected acquisition to succeed")
 				return
 			}
@@ -174,7 +174,7 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		token := ls.Acquire()
-		if token != nil {
+		if token.Accepted() {
 			accepted.Store(true)
 			<-blocker
 			token.Release()
@@ -199,7 +199,7 @@ func TestLimiter_QoS_RejectsWithHighWait(t *testing.T) {
 	// Establish a long average duration
 	for i := 0; i < 5; i++ {
 		token := ls.Acquire()
-		if token == nil {
+		if !token.Accepted() {
 			t.Fatal("expected acquisition to succeed")
 		}
 		time.Sleep(200 * time.Millisecond) // Simulate slow requests
@@ -208,11 +208,11 @@ func TestLimiter_QoS_RejectsWithHighWait(t *testing.T) {
 
 	// Fill the limit
 	token1 := ls.Acquire()
-	if token1 == nil {
+	if !token1.Accepted() {
 		t.Fatal("expected first acquisition to succeed")
 	}
 	token2 := ls.Acquire()
-	if token2 == nil {
+	if !token2.Accepted() {
 		t.Fatal("expected second acquisition to succeed")
 	}
 
@@ -220,10 +220,10 @@ func TestLimiter_QoS_RejectsWithHighWait(t *testing.T) {
 	// Projected wait = 1 * ~200ms = ~200ms > 50ms threshold
 	// Should be REJECTED
 	token3 := ls.Acquire()
-	if token3 != nil {
+	if token3.Accepted() {
 		t.Error("expected acquisition to fail due to high projected wait time")
-		token3.Release()
 	}
+	token3.Release() // Safe to call even if not accepted
 
 	token1.Release()
 	token2.Release()
@@ -261,7 +261,7 @@ func BenchmarkLimiter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			token := ls.Acquire()
-			if token != nil {
+			if token.Accepted() {
 				token.Release()
 			}
 		}
@@ -278,7 +278,7 @@ func BenchmarkLimiter_WithQoS(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			token := ls.Acquire()
-			if token != nil {
+			if token.Accepted() {
 				token.Release()
 			}
 		}
