@@ -6,33 +6,26 @@ A modern, framework-agnostic Go library for intelligent concurrency limiting to 
 
 In distributed systems, clients often retry failed requests, which can exacerbate server overload. When a server is overwhelmed and starts rejecting requests with 429 (Too Many Requests), aggressive client retries can make the situation worse.
 
-`loadshedder` provides intelligent concurrency limiting with two operating modes:
-
-1. **Phase 1 - Hard Limit**: Enforces a strict concurrency limit by rejecting all requests when the limit is exceeded
-2. **Phase 2 - QoS-Based Limiting**: Reduces unnecessary rejections by only rejecting requests when the projected wait time exceeds a configurable threshold
-
-This approach minimizes the number of 429 responses that trigger client retries, improving overall system stability.
+`loadshedder` provides intelligent concurrency limiting that adapts to your workload. It enforces a strict concurrency limit while optionally using Quality-of-Service (QoS) logic to minimize unnecessary rejections. When QoS is enabled, the library tracks request durations and only rejects requests when the projected wait time would exceed your threshold—reducing 429 responses that trigger client retries and improving overall system stability.
 
 ## Architecture
 
 **Framework-Agnostic Design:**
-- `loadshedder` - Core limiter with no framework dependencies
-- `loadshedder/httpware` - net/http middleware adapter
-- `loadshedder/ginware` - Gin middleware (separate module to avoid dependencies)
+- Core `loadshedder` package with no framework dependencies
+- Built-in net/http middleware
+- Separate `ginloadshedder` module for Gin framework (avoids dependencies)
 
 ## Features
 
-✅ **Both phases are complete** with the following capabilities:
-
-**Core Features:**
+**Core Capabilities:**
 - Framework-agnostic concurrency limiter
-- Hard concurrency limit enforcement (Phase 1 behavior, default)
-- QoS-based projected wait time limiting (Phase 2 behavior, opt-in)
+- Hard concurrency limit enforcement (default behavior)
+- Optional QoS-based projected wait time limiting
 - Zero external dependencies in core library
 - Lock-free implementation using atomic operations
 - Production-ready with >90% test coverage
 
-**QoS Features (Phase 2):**
+**QoS Features (Optional):**
 - Exponential moving average (EMA) of request durations
 - Projected wait time calculation: `(current_concurrency - limit) × avg_duration`
 - Configurable maximum acceptable wait time
@@ -42,14 +35,11 @@ This approach minimizes the number of 429 responses that trigger client retries,
 ## Installation
 
 ```bash
-# Core library (framework-agnostic)
+# Core library with net/http middleware
 go get github.com/pior/loadshedder
 
-# For net/http support
-# (httpware is included in the main module)
-
 # For Gin support
-go get github.com/pior/loadshedder/ginware
+go get github.com/pior/loadshedder/ginloadshedder
 ```
 
 ## Usage
@@ -65,15 +55,14 @@ import (
     "net/http"
 
     "github.com/pior/loadshedder"
-    "github.com/pior/loadshedder/httpware"
 )
 
 func main() {
-    // Create a limiter with a concurrency limit of 100
-    limiter := loadshedder.NewLimiter(100)
+    // Create a loadshedder with a concurrency limit of 100
+    ls := loadshedder.New(100)
 
     // Create HTTP middleware
-    mw := httpware.New(limiter)
+    mw := loadshedder.NewMiddleware(ls)
 
     // Wrap your handler
     handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,15 +81,15 @@ package main
 import (
     "github.com/gin-gonic/gin"
     "github.com/pior/loadshedder"
-    "github.com/pior/loadshedder/ginware"
+    "github.com/pior/loadshedder/ginloadshedder"
 )
 
 func main() {
-    // Create a limiter
-    limiter := loadshedder.NewLimiter(100)
+    // Create a loadshedder
+    ls := loadshedder.New(100)
 
     // Create Gin middleware
-    mw := ginware.New(limiter)
+    mw := ginloadshedder.New(ls)
 
     // Apply to router
     r := gin.Default()
@@ -125,7 +114,6 @@ import (
     "time"
 
     "github.com/pior/loadshedder"
-    "github.com/pior/loadshedder/httpware"
 )
 
 type metricsReporter struct{}
@@ -146,15 +134,15 @@ func (r *metricsReporter) OnCompleted(req *http.Request, current, limit int, dur
 }
 
 func main() {
-    limiter := loadshedder.NewLimiter(100)
-    mw := httpware.New(limiter, httpware.WithReporter(&metricsReporter{}))
+    ls := loadshedder.New(100)
+    mw := loadshedder.NewMiddleware(ls, loadshedder.WithReporter(&metricsReporter{}))
 
     handler := mw.Handler(http.DefaultServeMux)
     log.Fatal(http.ListenAndServe(":8080", handler))
 }
 ```
 
-### With QoS (Phase 2)
+### With QoS
 
 ```go
 package main
@@ -165,16 +153,15 @@ import (
     "time"
 
     "github.com/pior/loadshedder"
-    "github.com/pior/loadshedder/httpware"
 )
 
 func main() {
     // Enable QoS mode: only reject if projected wait > 200ms
     // This allows brief bursts over the limit without rejecting requests
-    limiter := loadshedder.NewLimiter(100,
+    ls := loadshedder.New(100,
         loadshedder.WithMaxWaitTime(200*time.Millisecond))
 
-    mw := httpware.New(limiter)
+    mw := loadshedder.NewMiddleware(ls)
 
     handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         // Your application logic
@@ -186,35 +173,37 @@ func main() {
 ```
 
 **How QoS Works:**
-- The limiter tracks the exponential moving average of request durations
+- The loadshedder tracks the exponential moving average of request durations
 - When concurrency exceeds the limit, it calculates: `projected_wait = (current - limit) × avg_duration`
 - Requests are only rejected if `projected_wait > maxWaitTime`
 - This reduces unnecessary 429s when requests complete quickly
 
 ## API Reference
 
-### Core Limiter
+### Core Loadshedder
 
 ```go
-func NewLimiter(limit int, opts ...LimiterOption) *Limiter
+func New(limit int, opts ...Option) *Loadshedder
 ```
 
 Creates a new framework-agnostic concurrency limiter.
 
 **Methods:**
-- `Acquire() bool` - Attempt to acquire a slot. Returns true if acquired.
-- `Release(duration time.Duration)` - Release a slot and record the duration.
+- `Acquire() *Token` - Attempt to acquire a slot. Returns a token if acquired, nil if rejected.
 - `Current() int` - Get current concurrency level.
 - `Limit() int` - Get the configured limit.
+
+**Token Methods:**
+- `Release()` - Release the token when operation completes. Call in a defer.
 
 **Options:**
 - `WithMaxWaitTime(maxWaitTime time.Duration)` - Enable QoS mode
 - `WithEMAAlpha(alpha float64)` - Set EMA smoothing factor (0 < alpha < 1)
 
-### HTTP Middleware (httpware)
+### HTTP Middleware
 
 ```go
-func New(limiter *Limiter, opts ...Option) *Middleware
+func NewMiddleware(loadshedder *Loadshedder, opts ...MiddlewareOption) *Middleware
 ```
 
 Creates net/http middleware.
@@ -235,10 +224,10 @@ type Reporter interface {
 }
 ```
 
-### Gin Middleware (ginware)
+### Gin Middleware (ginloadshedder)
 
 ```go
-func New(limiter *Limiter, opts ...Option) *Middleware
+func New(loadshedder *loadshedder.Loadshedder, opts ...Option) *Middleware
 ```
 
 Creates Gin middleware.
@@ -263,11 +252,15 @@ type Reporter interface {
 
 ### Framework-Agnostic Core
 
-The core `Limiter` has no framework dependencies, making it usable with any Go web framework. Framework-specific adapters live in separate packages.
+The core `Loadshedder` has no framework dependencies, making it usable with any Go web framework. Framework-specific adapters can be created as needed.
 
 ### Separate Module for Gin
 
-The Gin middleware lives in a separate Go module (`ginware`) to avoid adding Gin as a dependency to the core library. This keeps the core library lightweight.
+The Gin middleware lives in a separate Go module (`ginloadshedder`) to avoid adding Gin as a dependency to the core library. This keeps the core library lightweight.
+
+### Token-Based API
+
+The `Acquire()` method returns a `Token` that automatically tracks the start time. This eliminates the need for users to manually pass durations to `Release()` and ensures accurate duration tracking.
 
 ### No X-RateLimit-* Headers
 
@@ -278,8 +271,8 @@ This is a per-process limiter. In load-balanced scenarios, per-process limits do
 Minimal overhead with lock-free implementation:
 
 ```
-BenchmarkLimiter-10              	34567890	        34.2 ns/op
-BenchmarkLimiter_WithQoS-10      	32109876	        37.8 ns/op
+BenchmarkLoadshedder-10          	34567890	        34.2 ns/op
+BenchmarkLoadshedder_WithQoS-10  	32109876	        37.8 ns/op
 BenchmarkMiddleware-10           	 2847354	       421 ns/op
 ```
 
@@ -293,7 +286,7 @@ go test -cover ./...
 go test -race ./...
 
 # Test Gin middleware (separate module)
-cd ginware && go test -cover
+cd ginloadshedder && go test -cover
 ```
 
 ## Examples

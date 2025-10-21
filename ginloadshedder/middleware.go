@@ -1,5 +1,5 @@
-// Package ginware provides Gin middleware for the loadshedder.
-package ginware
+// Package ginloadshedder provides Gin middleware for the loadshedder.
+package ginloadshedder
 
 import (
 	"net/http"
@@ -11,7 +11,7 @@ import (
 
 // Middleware wraps a Gin handler with concurrency limiting.
 type Middleware struct {
-	limiter          *loadshedder.Limiter
+	loadshedder      *loadshedder.Loadshedder
 	reporter         Reporter
 	rejectionHandler gin.HandlerFunc
 }
@@ -46,10 +46,10 @@ func WithRejectionHandler(h gin.HandlerFunc) Option {
 	}
 }
 
-// New creates a new Gin middleware with the given limiter.
-func New(limiter *loadshedder.Limiter, opts ...Option) *Middleware {
+// New creates a new Gin middleware with the given loadshedder.
+func New(ls *loadshedder.Loadshedder, opts ...Option) *Middleware {
 	m := &Middleware{
-		limiter:          limiter,
+		loadshedder:      ls,
 		rejectionHandler: defaultRejectionHandler,
 	}
 
@@ -63,12 +63,11 @@ func New(limiter *loadshedder.Limiter, opts ...Option) *Middleware {
 // Handler returns a Gin middleware handler function.
 func (m *Middleware) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		start := time.Now()
-
-		if !m.limiter.Acquire() {
+		token := m.loadshedder.Acquire()
+		if token == nil {
 			// Request rejected
 			if m.reporter != nil {
-				m.reporter.OnRejected(c, m.limiter.Current(), m.limiter.Limit())
+				m.reporter.OnRejected(c, m.loadshedder.Current(), m.loadshedder.Limit())
 			}
 			m.rejectionHandler(c)
 			c.Abort()
@@ -77,15 +76,15 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 
 		// Request accepted
 		if m.reporter != nil {
-			m.reporter.OnAccepted(c, m.limiter.Current(), m.limiter.Limit())
+			m.reporter.OnAccepted(c, m.loadshedder.Current(), m.loadshedder.Limit())
 		}
 
 		defer func() {
-			duration := time.Since(start)
-			m.limiter.Release(duration)
+			duration := time.Since(token.start)
+			token.Release()
 
 			if m.reporter != nil {
-				m.reporter.OnCompleted(c, m.limiter.Current(), m.limiter.Limit(), duration)
+				m.reporter.OnCompleted(c, m.loadshedder.Current(), m.loadshedder.Limit(), duration)
 			}
 		}()
 

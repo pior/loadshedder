@@ -1,16 +1,13 @@
-// Package httpware provides net/http middleware for the loadshedder.
-package httpware
+package loadshedder
 
 import (
 	"net/http"
 	"time"
-
-	"github.com/pior/loadshedder"
 )
 
 // Middleware wraps an http.Handler with concurrency limiting.
 type Middleware struct {
-	limiter          *loadshedder.Limiter
+	loadshedder      *Loadshedder
 	reporter         Reporter
 	rejectionHandler http.Handler
 }
@@ -27,11 +24,11 @@ type Reporter interface {
 	OnCompleted(r *http.Request, current, limit int, duration time.Duration)
 }
 
-// Option configures the HTTP middleware.
-type Option func(*Middleware)
+// MiddlewareOption configures the HTTP middleware.
+type MiddlewareOption func(*Middleware)
 
 // WithReporter sets a reporter for observability.
-func WithReporter(r Reporter) Option {
+func WithReporter(r Reporter) MiddlewareOption {
 	return func(m *Middleware) {
 		m.reporter = r
 	}
@@ -39,16 +36,16 @@ func WithReporter(r Reporter) Option {
 
 // WithRejectionHandler sets a custom handler for rejected requests.
 // Default returns HTTP 429 with a Retry-After header.
-func WithRejectionHandler(h http.Handler) Option {
+func WithRejectionHandler(h http.Handler) MiddlewareOption {
 	return func(m *Middleware) {
 		m.rejectionHandler = h
 	}
 }
 
-// New creates a new HTTP middleware with the given limiter.
-func New(limiter *loadshedder.Limiter, opts ...Option) *Middleware {
+// NewMiddleware creates a new HTTP middleware with the given loadshedder.
+func NewMiddleware(loadshedder *Loadshedder, opts ...MiddlewareOption) *Middleware {
 	m := &Middleware{
-		limiter:          limiter,
+		loadshedder:      loadshedder,
 		rejectionHandler: defaultRejectionHandler(),
 	}
 
@@ -62,12 +59,11 @@ func New(limiter *loadshedder.Limiter, opts ...Option) *Middleware {
 // Handler wraps the given http.Handler with concurrency limiting.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		if !m.limiter.Acquire() {
+		token := m.loadshedder.Acquire()
+		if token == nil {
 			// Request rejected
 			if m.reporter != nil {
-				m.reporter.OnRejected(r, m.limiter.Current(), m.limiter.Limit())
+				m.reporter.OnRejected(r, m.loadshedder.Current(), m.loadshedder.Limit())
 			}
 			m.rejectionHandler.ServeHTTP(w, r)
 			return
@@ -75,15 +71,15 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 
 		// Request accepted
 		if m.reporter != nil {
-			m.reporter.OnAccepted(r, m.limiter.Current(), m.limiter.Limit())
+			m.reporter.OnAccepted(r, m.loadshedder.Current(), m.loadshedder.Limit())
 		}
 
 		defer func() {
-			duration := time.Since(start)
-			m.limiter.Release(duration)
+			duration := time.Since(token.start)
+			token.Release()
 
 			if m.reporter != nil {
-				m.reporter.OnCompleted(r, m.limiter.Current(), m.limiter.Limit(), duration)
+				m.reporter.OnCompleted(r, m.loadshedder.Current(), m.loadshedder.Limit(), duration)
 			}
 		}()
 

@@ -7,66 +7,71 @@ import (
 	"time"
 )
 
-func TestNewLimiter_PanicsWithZeroLimit(t *testing.T) {
+func TestNew_PanicsWithZeroLimit(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic with zero limit")
 		}
 	}()
-	NewLimiter(0)
+	New(0)
 }
 
-func TestNewLimiter_PanicsWithNegativeLimit(t *testing.T) {
+func TestNew_PanicsWithNegativeLimit(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic with negative limit")
 		}
 	}()
-	NewLimiter(-1)
+	New(-1)
 }
 
-func TestLimiter_AcceptsUnderLimit(t *testing.T) {
-	limiter := NewLimiter(5)
+func TestLoadshedder_AcceptsUnderLimit(t *testing.T) {
+	ls := New(5)
 
 	for i := 0; i < 5; i++ {
-		if !limiter.Acquire() {
+		token := ls.Acquire()
+		if token == nil {
 			t.Errorf("request %d: expected acquisition to succeed", i)
 		}
-		limiter.Release(10 * time.Millisecond)
+		token.Release()
 	}
 }
 
-func TestLimiter_RejectsOverLimit(t *testing.T) {
-	limiter := NewLimiter(2)
+func TestLoadshedder_RejectsOverLimit(t *testing.T) {
+	ls := New(2)
 
 	// Acquire 2 slots (at limit)
-	if !limiter.Acquire() {
+	token1 := ls.Acquire()
+	if token1 == nil {
 		t.Fatal("expected first acquisition to succeed")
 	}
-	if !limiter.Acquire() {
+	token2 := ls.Acquire()
+	if token2 == nil {
 		t.Fatal("expected second acquisition to succeed")
 	}
 
 	// Third acquisition should fail
-	if limiter.Acquire() {
+	token3 := ls.Acquire()
+	if token3 != nil {
 		t.Error("expected third acquisition to fail")
-		limiter.Release(0)
+		token3.Release()
 	}
 
 	// Release one slot
-	limiter.Release(10 * time.Millisecond)
+	token1.Release()
 
 	// Now should be able to acquire again
-	if !limiter.Acquire() {
+	token4 := ls.Acquire()
+	if token4 == nil {
 		t.Error("expected acquisition to succeed after release")
 	}
-	limiter.Release(10 * time.Millisecond)
-	limiter.Release(10 * time.Millisecond)
+	token2.Release()
+	token4.Release()
 }
 
 func TestLimiter_ConcurrentRequests(t *testing.T) {
 	limit := 10
-	limiter := NewLimiter(limit)
+	ls := New(limit)
 
 	maxConcurrent := atomic.Int64{}
 	currentConcurrent := atomic.Int64{}
@@ -81,7 +86,8 @@ func TestLimiter_ConcurrentRequests(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			if !limiter.Acquire() {
+			token := ls.Acquire()
+			if token == nil {
 				rejected.Add(1)
 				return
 			}
@@ -101,7 +107,7 @@ func TestLimiter_ConcurrentRequests(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 
 			currentConcurrent.Add(-1)
-			limiter.Release(10 * time.Millisecond)
+			token.Release()
 		}()
 	}
 
@@ -125,14 +131,16 @@ func TestLimiter_ConcurrentRequests(t *testing.T) {
 }
 
 func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
-	limiter := NewLimiter(2, WithMaxWaitTime(500*time.Millisecond))
+	ls := New(2, WithMaxWaitTime(500*time.Millisecond))
 
 	// Establish an average duration
 	for i := 0; i < 5; i++ {
-		if !limiter.Acquire() {
+		token := ls.Acquire()
+		if token == nil {
 			t.Fatal("expected acquisition to succeed")
 		}
-		limiter.Release(50 * time.Millisecond) // Fast requests
+		time.Sleep(50 * time.Millisecond) // Simulate fast requests
+		token.Release()
 	}
 
 	// Fill the limit with blocking operations
@@ -143,12 +151,13 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if !limiter.Acquire() {
+			token := ls.Acquire()
+			if token == nil {
 				t.Error("expected acquisition to succeed")
 				return
 			}
 			<-blocker
-			limiter.Release(10 * time.Millisecond)
+			token.Release()
 		}()
 	}
 
@@ -161,10 +170,11 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 	accepted := atomic.Bool{}
 	go func() {
 		defer wg.Done()
-		if limiter.Acquire() {
+		token := ls.Acquire()
+		if token != nil {
 			accepted.Store(true)
 			<-blocker
-			limiter.Release(10 * time.Millisecond)
+			token.Release()
 		}
 	}()
 
@@ -178,34 +188,39 @@ func TestLimiter_QoS_AcceptsOverLimitWithLowWait(t *testing.T) {
 }
 
 func TestLimiter_QoS_RejectsWithHighWait(t *testing.T) {
-	limiter := NewLimiter(2, WithMaxWaitTime(50*time.Millisecond))
+	ls := New(2, WithMaxWaitTime(50*time.Millisecond))
 
 	// Establish a long average duration
 	for i := 0; i < 5; i++ {
-		if !limiter.Acquire() {
+		token := ls.Acquire()
+		if token == nil {
 			t.Fatal("expected acquisition to succeed")
 		}
-		limiter.Release(200 * time.Millisecond) // Slow requests
+		time.Sleep(200 * time.Millisecond) // Simulate slow requests
+		token.Release()
 	}
 
 	// Fill the limit
-	if !limiter.Acquire() {
+	token1 := ls.Acquire()
+	if token1 == nil {
 		t.Fatal("expected first acquisition to succeed")
 	}
-	if !limiter.Acquire() {
+	token2 := ls.Acquire()
+	if token2 == nil {
 		t.Fatal("expected second acquisition to succeed")
 	}
 
 	// Try to acquire over the limit
 	// Projected wait = 1 * ~200ms = ~200ms > 50ms threshold
 	// Should be REJECTED
-	if limiter.Acquire() {
+	token3 := ls.Acquire()
+	if token3 != nil {
 		t.Error("expected acquisition to fail due to high projected wait time")
-		limiter.Release(0)
+		token3.Release()
 	}
 
-	limiter.Release(10 * time.Millisecond)
-	limiter.Release(10 * time.Millisecond)
+	token1.Release()
+	token2.Release()
 }
 
 func TestWithEMAAlpha_PanicsWithInvalidValues(t *testing.T) {
@@ -226,32 +241,34 @@ func TestWithEMAAlpha_PanicsWithInvalidValues(t *testing.T) {
 					t.Errorf("expected panic with alpha=%f", tt.alpha)
 				}
 			}()
-			NewLimiter(10, WithEMAAlpha(tt.alpha))
+			New(10, WithEMAAlpha(tt.alpha))
 		})
 	}
 }
 
 func BenchmarkLimiter(b *testing.B) {
-	limiter := NewLimiter(100)
+	ls := New(100)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if limiter.Acquire() {
-				limiter.Release(time.Microsecond)
+			token := ls.Acquire()
+			if token != nil {
+				token.Release()
 			}
 		}
 	})
 }
 
 func BenchmarkLimiter_WithQoS(b *testing.B) {
-	limiter := NewLimiter(100, WithMaxWaitTime(100*time.Millisecond))
+	ls := New(100, WithMaxWaitTime(100*time.Millisecond))
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if limiter.Acquire() {
-				limiter.Release(time.Microsecond)
+			token := ls.Acquire()
+			if token != nil {
+				token.Release()
 			}
 		}
 	})

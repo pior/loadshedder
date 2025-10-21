@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pior/loadshedder"
-	"github.com/pior/loadshedder/ginware"
+	"github.com/pior/loadshedder/ginloadshedder"
 )
 
 // exampleReporter demonstrates observability integration
@@ -26,10 +26,10 @@ func (r *exampleReporter) OnCompleted(c *gin.Context, current, limit int, durati
 
 func main() {
 	// Create a limiter with a concurrency limit of 10
-	limiter := loadshedder.NewLimiter(10)
+	limiter := loadshedder.New(10)
 
 	// Create Gin middleware with reporter for observability
-	mw := ginware.New(limiter, ginware.WithReporter(&exampleReporter{}))
+	mw := ginloadshedder.New(limiter, ginloadshedder.WithReporter(&exampleReporter{}))
 
 	// Create Gin router
 	r := gin.Default()

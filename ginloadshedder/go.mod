@@ -1,4 +1,4 @@
-module github.com/pior/loadshedder/ginware
+module github.com/pior/loadshedder/ginloadshedder
 
 go 1.24
 

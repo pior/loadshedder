@@ -1,4 +1,4 @@
-package httpware
+package loadshedder
 
 import (
 	"net/http"
@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/pior/loadshedder"
 )
 
 type testReporter struct {
@@ -30,8 +28,8 @@ func (tr *testReporter) OnCompleted(r *http.Request, current, limit int, duratio
 }
 
 func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
-	limiter := loadshedder.NewLimiter(5)
-	mw := New(limiter)
+	limiter := New(5)
+	mw := NewMiddleware(limiter)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -49,8 +47,8 @@ func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
 }
 
 func TestMiddleware_RejectsOverLimit(t *testing.T) {
-	limiter := loadshedder.NewLimiter(2)
-	mw := New(limiter)
+	limiter := New(2)
+	mw := NewMiddleware(limiter)
 
 	blocker := make(chan struct{})
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,9 +88,9 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 }
 
 func TestMiddleware_WithReporter(t *testing.T) {
-	limiter := loadshedder.NewLimiter(2)
+	limiter := New(2)
 	reporter := &testReporter{}
-	mw := New(limiter, WithReporter(reporter))
+	mw := NewMiddleware(limiter, WithReporter(reporter))
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond)
@@ -120,14 +118,14 @@ func TestMiddleware_WithReporter(t *testing.T) {
 }
 
 func TestMiddleware_CustomRejectionHandler(t *testing.T) {
-	limiter := loadshedder.NewLimiter(1)
+	limiter := New(1)
 	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom", "rejection")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("custom rejection"))
 	})
 
-	mw := New(limiter, WithRejectionHandler(customHandler))
+	mw := NewMiddleware(limiter, WithRejectionHandler(customHandler))
 
 	blocker := make(chan struct{})
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -169,8 +167,8 @@ func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 }
 
 func BenchmarkMiddleware(b *testing.B) {
-	limiter := loadshedder.NewLimiter(100)
-	mw := New(limiter)
+	limiter := New(100)
+	mw := NewMiddleware(limiter)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

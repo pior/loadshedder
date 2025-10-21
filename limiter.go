@@ -5,10 +5,25 @@ import (
 	"time"
 )
 
-// Limiter is a framework-agnostic concurrency limiter.
+// Token represents an acquired slot in the loadshedder.
+// It must be released by calling Release() when the operation completes.
+type Token struct {
+	loadshedder *Loadshedder
+	start       time.Time
+}
+
+// Release releases the token back to the loadshedder.
+// This should be called when the operation completes, typically in a defer.
+func (t *Token) Release() {
+	duration := time.Since(t.start)
+	t.loadshedder.current.Add(-1)
+	t.loadshedder.durationTracker.record(duration)
+}
+
+// Loadshedder is a framework-agnostic concurrency limiter.
 // It tracks concurrent operations and determines whether new operations
 // should be accepted or rejected based on the configured limit and QoS settings.
-type Limiter struct {
+type Loadshedder struct {
 	limit           int
 	current         atomic.Int64
 	durationTracker *durationTracker
@@ -17,14 +32,14 @@ type Limiter struct {
 	maxWaitTime time.Duration // If > 0, only reject if projected wait exceeds this
 }
 
-// NewLimiter creates a new concurrency limiter with the specified limit.
+// New creates a new concurrency limiter with the specified limit.
 // The limit must be positive.
-func NewLimiter(limit int, opts ...LimiterOption) *Limiter {
+func New(limit int, opts ...Option) *Loadshedder {
 	if limit <= 0 {
 		panic("loadshedder: limit must be positive")
 	}
 
-	l := &Limiter{
+	l := &Loadshedder{
 		limit:           limit,
 		durationTracker: newDurationTracker(0.1), // Default alpha = 0.1
 	}
@@ -37,9 +52,9 @@ func NewLimiter(limit int, opts ...LimiterOption) *Limiter {
 }
 
 // Acquire attempts to acquire a slot for processing.
-// Returns true if the slot was acquired, false if the request should be rejected.
-// If acquired, the caller MUST call Release() when done, typically in a defer.
-func (l *Limiter) Acquire() bool {
+// Returns a Token if the slot was acquired, nil if the request should be rejected.
+// If a token is returned, the caller MUST call token.Release() when done, typically in a defer.
+func (l *Loadshedder) Acquire() *Token {
 	current := l.current.Add(1)
 
 	// Check if we exceeded the limit
@@ -51,39 +66,32 @@ func (l *Limiter) Acquire() bool {
 			// Only reject if projected wait exceeds the threshold
 			if projectedWait <= l.maxWaitTime {
 				// Accept even though we're over the limit
-				return true
+				return &Token{loadshedder: l, start: time.Now()}
 			}
 		}
 
 		// Release the slot immediately (hard rejection)
 		l.current.Add(-1)
-		return false
+		return nil
 	}
 
 	// Accepted (under limit)
-	return true
-}
-
-// Release releases a previously acquired slot.
-// This should be called when the operation completes, typically in a defer.
-func (l *Limiter) Release(duration time.Duration) {
-	l.current.Add(-1)
-	l.durationTracker.record(duration)
+	return &Token{loadshedder: l, start: time.Now()}
 }
 
 // Current returns the current number of concurrent operations.
-func (l *Limiter) Current() int {
+func (l *Loadshedder) Current() int {
 	return int(l.current.Load())
 }
 
 // Limit returns the configured concurrency limit.
-func (l *Limiter) Limit() int {
+func (l *Loadshedder) Limit() int {
 	return l.limit
 }
 
 // calculateProjectedWaitTime estimates how long a request would wait in queue.
 // Formula: (current_concurrency - limit) * avg_request_duration
-func (l *Limiter) calculateProjectedWaitTime(current int) time.Duration {
+func (l *Loadshedder) calculateProjectedWaitTime(current int) time.Duration {
 	if current <= l.limit {
 		return 0
 	}
@@ -98,21 +106,21 @@ func (l *Limiter) calculateProjectedWaitTime(current int) time.Duration {
 	return time.Duration(queueDepth) * avgDuration
 }
 
-// LimiterOption configures a Limiter.
-type LimiterOption func(*Limiter)
+// Option configures a Loadshedder.
+type Option func(*Loadshedder)
 
 // WithMaxWaitTime enables QoS-based rejection: only reject requests if the
 // projected wait time exceeds the specified duration.
-func WithMaxWaitTime(maxWaitTime time.Duration) LimiterOption {
-	return func(l *Limiter) {
+func WithMaxWaitTime(maxWaitTime time.Duration) Option {
+	return func(l *Loadshedder) {
 		l.maxWaitTime = maxWaitTime
 	}
 }
 
 // WithEMAAlpha sets the smoothing factor for the exponential moving average
 // of request durations. Alpha must be between 0 and 1 (exclusive).
-func WithEMAAlpha(alpha float64) LimiterOption {
-	return func(l *Limiter) {
+func WithEMAAlpha(alpha float64) Option {
+	return func(l *Loadshedder) {
 		l.durationTracker = newDurationTracker(alpha)
 	}
 }
