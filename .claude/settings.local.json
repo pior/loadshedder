@@ -4,7 +4,14 @@
       "Bash(go test:*)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(go build:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(cat:*)",
+      "Bash(go get:*)",
+      "Bash(go run:*)",
+      "Bash(bud lint:*)",
+      "Bash(golangci-lint run:*)"
     ],
     "deny": [],
     "ask": []

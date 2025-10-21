@@ -15,15 +15,15 @@ type testReporter struct {
 	completed atomic.Int64
 }
 
-func (tr *testReporter) OnAccepted(r *http.Request, current, limit int) {
+func (tr *testReporter) OnAccepted(r *http.Request, stats Stats) {
 	tr.accepted.Add(1)
 }
 
-func (tr *testReporter) OnRejected(r *http.Request, current, limit int) {
+func (tr *testReporter) OnRejected(r *http.Request, stats Stats) {
 	tr.rejected.Add(1)
 }
 
-func (tr *testReporter) OnCompleted(r *http.Request, current, limit int, duration time.Duration) {
+func (tr *testReporter) OnCompleted(r *http.Request, stats Stats) {
 	tr.completed.Add(1)
 }
 
@@ -35,8 +35,8 @@ func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+	for i := range 5 {
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -58,11 +58,11 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 
 	// Start 2 requests that block (fill the limit)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 		}()
@@ -71,7 +71,7 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// This request should be rejected
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -90,7 +90,8 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 func TestMiddleware_WithReporter(t *testing.T) {
 	limiter := New(Config{Limit: 2})
 	reporter := &testReporter{}
-	mw := NewMiddleware(limiter, WithReporter(reporter))
+	mw := NewMiddleware(limiter)
+	mw.Reporter = reporter
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond)
@@ -98,8 +99,8 @@ func TestMiddleware_WithReporter(t *testing.T) {
 	}))
 
 	// Send 3 requests sequentially
-	for i := 0; i < 3; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+	for range 3 {
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 	}
@@ -119,13 +120,13 @@ func TestMiddleware_WithReporter(t *testing.T) {
 
 func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 	limiter := New(Config{Limit: 1})
-	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	mw := NewMiddleware(limiter)
+	mw.RejectionHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom", "rejection")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("custom rejection"))
+		_, _ = w.Write([]byte("custom rejection"))
 	})
-
-	mw := NewMiddleware(limiter, WithRejectionHandler(customHandler))
 
 	blocker := make(chan struct{})
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +139,7 @@ func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 	}()
@@ -146,7 +147,7 @@ func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send a request that should be rejected
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -177,7 +178,7 @@ func BenchmarkMiddleware(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 		}
