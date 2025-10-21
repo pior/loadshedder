@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pior/loadshedder"
+	"github.com/pior/loadshedder/httpware"
 )
 
 // exampleReporter demonstrates observability integration
@@ -25,12 +26,14 @@ func (r *exampleReporter) OnCompleted(req *http.Request, current, limit int, dur
 }
 
 func main() {
-	// Create a load shedder with a concurrency limit of 10
-	// and attach a reporter for observability
-	ls := loadshedder.New(10, loadshedder.WithReporter(&exampleReporter{}))
+	// Create a limiter with a concurrency limit of 10
+	limiter := loadshedder.NewLimiter(10)
 
-	// Wrap your handler with the load shedder middleware
-	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Create HTTP middleware with reporter for observability
+	mw := httpware.New(limiter, httpware.WithReporter(&exampleReporter{}))
+
+	// Wrap your handler
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate some work
 		time.Sleep(100 * time.Millisecond)
 

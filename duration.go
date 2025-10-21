@@ -10,7 +10,7 @@ import (
 // It provides thread-safe updates using atomic operations.
 type durationTracker struct {
 	avgDuration atomic.Uint64 // Exponential moving average of request duration (nanoseconds)
-	alpha       float64        // Smoothing factor for EMA (between 0 and 1, exclusive)
+	alpha       float64       // Smoothing factor for EMA (between 0 and 1, exclusive)
 }
 
 // newDurationTracker creates a new duration tracker with the given smoothing factor.

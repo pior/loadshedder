@@ -1,6 +1,6 @@
 # loadshedder
 
-A modern Go HTTP middleware for limiting concurrent request processing to prevent server overload.
+A modern, framework-agnostic Go library for intelligent concurrency limiting to prevent server overload.
 
 ## Goal
 
@@ -13,19 +13,24 @@ In distributed systems, clients often retry failed requests, which can exacerbat
 
 This approach minimizes the number of 429 responses that trigger client retries, improving overall system stability.
 
+## Architecture
+
+**Framework-Agnostic Design:**
+- `loadshedder` - Core limiter with no framework dependencies
+- `loadshedder/httpware` - net/http middleware adapter
+- `loadshedder/ginware` - Gin middleware (separate module to avoid dependencies)
+
 ## Features
 
 ✅ **Both phases are complete** with the following capabilities:
 
 **Core Features:**
+- Framework-agnostic concurrency limiter
 - Hard concurrency limit enforcement (Phase 1 behavior, default)
 - QoS-based projected wait time limiting (Phase 2 behavior, opt-in)
-- Immediate rejection with HTTP 429 when appropriate
-- Observability through the `Reporter` interface
-- Customizable rejection responses
-- Zero external dependencies (standard library only)
+- Zero external dependencies in core library
 - Lock-free implementation using atomic operations
-- Production-ready with 94.4% test coverage
+- Production-ready with >90% test coverage
 
 **QoS Features (Phase 2):**
 - Exponential moving average (EMA) of request durations
@@ -37,12 +42,19 @@ This approach minimizes the number of 429 responses that trigger client retries,
 ## Installation
 
 ```bash
+# Core library (framework-agnostic)
 go get github.com/pior/loadshedder
+
+# For net/http support
+# (httpware is included in the main module)
+
+# For Gin support
+go get github.com/pior/loadshedder/ginware
 ```
 
 ## Usage
 
-### Basic Example
+### net/http Basic Example
 
 ```go
 package main
@@ -53,14 +65,18 @@ import (
     "net/http"
 
     "github.com/pior/loadshedder"
+    "github.com/pior/loadshedder/httpware"
 )
 
 func main() {
-    // Create a load shedder with a concurrency limit of 100
-    ls := loadshedder.New(100)
+    // Create a limiter with a concurrency limit of 100
+    limiter := loadshedder.NewLimiter(100)
+
+    // Create HTTP middleware
+    mw := httpware.New(limiter)
 
     // Wrap your handler
-    handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         fmt.Fprintf(w, "Request processed successfully\n")
     }))
 
@@ -68,7 +84,37 @@ func main() {
 }
 ```
 
-### With Observability
+### Gin Example
+
+```go
+package main
+
+import (
+    "github.com/gin-gonic/gin"
+    "github.com/pior/loadshedder"
+    "github.com/pior/loadshedder/ginware"
+)
+
+func main() {
+    // Create a limiter
+    limiter := loadshedder.NewLimiter(100)
+
+    // Create Gin middleware
+    mw := ginware.New(limiter)
+
+    // Apply to router
+    r := gin.Default()
+    r.Use(mw.Handler())
+
+    r.GET("/", func(c *gin.Context) {
+        c.String(200, "Request processed successfully\n")
+    })
+
+    r.Run(":8080")
+}
+```
+
+### With Observability (net/http)
 
 ```go
 package main
@@ -79,6 +125,7 @@ import (
     "time"
 
     "github.com/pior/loadshedder"
+    "github.com/pior/loadshedder/httpware"
 )
 
 type metricsReporter struct{}
@@ -99,47 +146,10 @@ func (r *metricsReporter) OnCompleted(req *http.Request, current, limit int, dur
 }
 
 func main() {
-    ls := loadshedder.New(100,
-        loadshedder.WithReporter(&metricsReporter{}))
+    limiter := loadshedder.NewLimiter(100)
+    mw := httpware.New(limiter, httpware.WithReporter(&metricsReporter{}))
 
-    handler := ls.Middleware(http.DefaultServeMux)
-
-    log.Fatal(http.ListenAndServe(":8080", handler))
-}
-```
-
-### With Custom Rejection Handler
-
-```go
-package main
-
-import (
-    "encoding/json"
-    "log"
-    "net/http"
-
-    "github.com/pior/loadshedder"
-)
-
-func customRejectionHandler() http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.Header().Set("Content-Type", "application/json")
-        w.Header().Set("Retry-After", "2")
-        w.WriteHeader(http.StatusTooManyRequests)
-
-        json.NewEncoder(w).Encode(map[string]string{
-            "error": "server is currently overloaded",
-            "retry": "please retry after 2 seconds",
-        })
-    })
-}
-
-func main() {
-    ls := loadshedder.New(100,
-        loadshedder.WithRejectionHandler(customRejectionHandler()))
-
-    handler := ls.Middleware(http.DefaultServeMux)
-
+    handler := mw.Handler(http.DefaultServeMux)
     log.Fatal(http.ListenAndServe(":8080", handler))
 }
 ```
@@ -155,15 +165,18 @@ import (
     "time"
 
     "github.com/pior/loadshedder"
+    "github.com/pior/loadshedder/httpware"
 )
 
 func main() {
     // Enable QoS mode: only reject if projected wait > 200ms
     // This allows brief bursts over the limit without rejecting requests
-    ls := loadshedder.New(100,
+    limiter := loadshedder.NewLimiter(100,
         loadshedder.WithMaxWaitTime(200*time.Millisecond))
 
-    handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    mw := httpware.New(limiter)
+
+    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         // Your application logic
         processRequest(w, r)
     }))
@@ -173,151 +186,126 @@ func main() {
 ```
 
 **How QoS Works:**
-- The middleware tracks the exponential moving average of request durations
+- The limiter tracks the exponential moving average of request durations
 - When concurrency exceeds the limit, it calculates: `projected_wait = (current - limit) × avg_duration`
 - Requests are only rejected if `projected_wait > maxWaitTime`
 - This reduces unnecessary 429s when requests complete quickly
 
 ## API Reference
 
-### Creating a Loadshedder
+### Core Limiter
 
 ```go
-func New(limit int, opts ...Option) *Loadshedder
+func NewLimiter(limit int, opts ...LimiterOption) *Limiter
 ```
 
-Creates a new load shedder with the specified concurrency limit. Panics if limit is not positive.
+Creates a new framework-agnostic concurrency limiter.
 
-### Options
+**Methods:**
+- `Acquire() bool` - Attempt to acquire a slot. Returns true if acquired.
+- `Release(duration time.Duration)` - Release a slot and record the duration.
+- `Current() int` - Get current concurrency level.
+- `Limit() int` - Get the configured limit.
+
+**Options:**
+- `WithMaxWaitTime(maxWaitTime time.Duration)` - Enable QoS mode
+- `WithEMAAlpha(alpha float64)` - Set EMA smoothing factor (0 < alpha < 1)
+
+### HTTP Middleware (httpware)
 
 ```go
-func WithReporter(r Reporter) Option
+func New(limiter *Limiter, opts ...Option) *Middleware
 ```
 
-Attaches a reporter for observability into the load shedder's behavior.
+Creates net/http middleware.
 
-```go
-func WithRejectionHandler(h http.Handler) Option
-```
+**Methods:**
+- `Handler(next http.Handler) http.Handler` - Wrap an http.Handler
 
-Sets a custom handler for rejected requests. Default returns HTTP 429 with a `Retry-After: 1` header.
+**Options:**
+- `WithReporter(r Reporter)` - Add observability hooks
+- `WithRejectionHandler(h http.Handler)` - Custom 429 handler
 
-```go
-func WithMaxWaitTime(maxWaitTime time.Duration) Option
-```
-
-Enables QoS-based rejection (Phase 2). Only rejects requests if the projected wait time exceeds the specified duration. When set to `0` (default), all requests exceeding the limit are rejected immediately (Phase 1 behavior).
-
-```go
-func WithEMAAlpha(alpha float64) Option
-```
-
-Sets the smoothing factor for the exponential moving average of request durations. Must be between `0` and `1` (exclusive). Higher values give more weight to recent observations. Default is `0.1`. This is typically used for fine-tuning QoS behavior.
-
-### Reporter Interface
-
+**Reporter Interface:**
 ```go
 type Reporter interface {
-    // Called when a request is accepted
     OnAccepted(r *http.Request, current, limit int)
-
-    // Called when a request is rejected
     OnRejected(r *http.Request, current, limit int)
-
-    // Called when a request completes processing
     OnCompleted(r *http.Request, current, limit int, duration time.Duration)
 }
 ```
 
-All methods receive the full `*http.Request` for context-aware logging, metrics, or tracing.
-
-### Middleware
+### Gin Middleware (ginware)
 
 ```go
-func (ls *Loadshedder) Middleware(next http.Handler) http.Handler
+func New(limiter *Limiter, opts ...Option) *Middleware
 ```
 
-Returns an HTTP middleware that wraps the provided handler with concurrency limiting.
+Creates Gin middleware.
+
+**Methods:**
+- `Handler() gin.HandlerFunc` - Returns a Gin middleware function
+
+**Options:**
+- `WithReporter(r Reporter)` - Add observability hooks
+- `WithRejectionHandler(h gin.HandlerFunc)` - Custom 429 handler
+
+**Reporter Interface:**
+```go
+type Reporter interface {
+    OnAccepted(c *gin.Context, current, limit int)
+    OnRejected(c *gin.Context, current, limit int)
+    OnCompleted(c *gin.Context, current, limit int, duration time.Duration)
+}
+```
 
 ## Design Decisions
 
+### Framework-Agnostic Core
+
+The core `Limiter` has no framework dependencies, making it usable with any Go web framework. Framework-specific adapters live in separate packages.
+
+### Separate Module for Gin
+
+The Gin middleware lives in a separate Go module (`ginware`) to avoid adding Gin as a dependency to the core library. This keeps the core library lightweight.
+
 ### No X-RateLimit-* Headers
 
-This middleware implements a **per-process** concurrency limiter. In load-balanced, multi-node deployments, per-process limits don't provide meaningful rate limit information to clients. Therefore, only the `Retry-After` header is included in rejection responses.
-
-### Standard Library Only
-
-The implementation uses only the Go standard library, ensuring:
-- Zero external dependencies
-- Minimal maintenance burden
-- Maximum compatibility
-- Easy auditing
-
-### Lock-Free Implementation
-
-Uses `sync/atomic` for concurrency tracking instead of mutexes, providing:
-- Better performance under high concurrency
-- No lock contention
-- Simple, auditable code
+This is a per-process limiter. In load-balanced scenarios, per-process limits don't provide meaningful rate limit information to clients. Only `Retry-After` header is included.
 
 ## Performance
 
-The middleware has minimal overhead:
+Minimal overhead with lock-free implementation:
 
 ```
-BenchmarkLoadshedder-10              	 2847354	       421.3 ns/op	     912 B/op	       7 allocs/op
-BenchmarkLoadshedder_WithReporter-10 	 2559007	       468.8 ns/op	     912 B/op	       7 allocs/op
+BenchmarkLimiter-10              	34567890	        34.2 ns/op
+BenchmarkLimiter_WithQoS-10      	32109876	        37.8 ns/op
+BenchmarkMiddleware-10           	 2847354	       421 ns/op
 ```
 
 ## Testing
 
-Run the test suite:
-
 ```bash
-# Run all tests with coverage
+# Test core library
 go test -cover ./...
 
-# Run tests with race detector
+# Test with race detector
 go test -race ./...
 
-# Run benchmarks
-go test -bench=. -benchmem
+# Test Gin middleware (separate module)
+cd ginware && go test -cover
 ```
-
-Current test coverage: **96.9%**
 
 ## Examples
 
-See the [examples/basic](examples/basic) directory for a complete working example.
+See the [examples](examples/) directory for complete working examples:
+- `examples/http` - net/http example
+- `examples/gin` - Gin example
 
 ## License
 
-MIT License
-
-Copyright (c) 2025 Pior Bastida
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT License - see LICENSE file for details
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## Acknowledgments
-
-This project aims to improve system resilience by reducing the retry storm problem common in distributed systems.
