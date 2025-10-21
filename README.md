@@ -1,45 +1,43 @@
 # loadshedder
 
-A modern, framework-agnostic Go library for intelligent concurrency limiting to prevent server overload.
+A modern, framework-agnostic Go library for concurrency limiting with optional request queuing to prevent server overload.
 
 ## Goal
 
 In distributed systems, clients often retry failed requests, which can exacerbate server overload. When a server is overwhelmed and starts rejecting requests with 429 (Too Many Requests), aggressive client retries can make the situation worse.
 
-`loadshedder` provides intelligent concurrency limiting that adapts to your workload. It enforces a strict concurrency limit while optionally using Quality-of-Service (QoS) logic to minimize unnecessary rejections. When QoS is enabled, the library tracks request durations and only rejects requests when the projected wait time would exceed your threshold—reducing 429 responses that trigger client retries and improving overall system stability.
+`loadshedder` provides simple, predictable concurrency limiting. It enforces a strict concurrency limit and optionally allows requests to wait in a bounded queue. This reduces unnecessary 429 responses during brief traffic spikes while protecting against sustained overload—improving overall system stability without complex heuristics.
 
 ## Architecture
 
 **Framework-Agnostic Design:**
 - Core `loadshedder` package with no framework dependencies
 - Built-in net/http middleware
-- Separate `ginloadshedder` module for Gin framework (avoids dependencies)
+- Works with any framework that can wrap net/http handlers (Gin, Echo, Chi, etc.)
 
 ## Features
 
 **Core Capabilities:**
 - Framework-agnostic concurrency limiter
-- Hard concurrency limit enforcement (default behavior)
-- Optional QoS-based projected wait time limiting
-- Zero external dependencies in core library
-- Lock-free implementation using atomic operations
-- Production-ready with >90% test coverage
+- Hard concurrency limit enforcement
+- Optional bounded waiting queue (WaitingLimit)
+- Semaphore-based request coordination
+- Context-aware (respects cancellation)
+- Minimal dependencies (only golang.org/x/sync)
+- Lock-free atomic counters with semaphore coordination
+- Production-ready with >95% test coverage
 
-**QoS Features (Optional):**
-- Exponential moving average (EMA) of request durations
-- Projected wait time calculation: `(current_concurrency - limit) × avg_duration`
-- Configurable maximum acceptable wait time
-- Accepts requests over the limit if they'll complete quickly
-- Tunable EMA smoothing factor for different workload characteristics
+**Waiting Queue (Optional):**
+- Configure `WaitingLimit` to allow requests to wait when at capacity
+- Requests wait on a semaphore until a slot becomes available
+- Hard rejection when `current > limit + waitingLimit`
+- Respects context cancellation during waiting
+- Real-time stats show Running vs Waiting requests
 
 ## Installation
 
 ```bash
-# Core library with net/http middleware
 go get github.com/pior/loadshedder
-
-# For Gin support
-go get github.com/pior/loadshedder/ginloadshedder
 ```
 
 ## Usage
@@ -75,15 +73,18 @@ func main() {
 }
 ```
 
-### Gin Example
+### Using with Gin (or other frameworks)
+
+Gin and other frameworks can wrap standard net/http handlers:
 
 ```go
 package main
 
 import (
+    "net/http"
+
     "github.com/gin-gonic/gin"
     "github.com/pior/loadshedder"
-    "github.com/pior/loadshedder/ginloadshedder"
 )
 
 func main() {
@@ -92,18 +93,50 @@ func main() {
         Limit: 100,
     })
 
-    // Create Gin middleware
-    mw := ginloadshedder.New(ls)
+    // Create HTTP middleware
+    mw := loadshedder.NewMiddleware(ls)
 
-    // Apply to router
-    r := gin.Default()
-    r.Use(mw.Handler())
+    // Wrap the entire Gin engine with the loadshedder
+    engine := gin.Default()
 
-    r.GET("/", func(c *gin.Context) {
+    engine.GET("/", func(c *gin.Context) {
         c.String(200, "Request processed successfully\n")
     })
 
-    r.Run(":8080")
+    // Wrap the Gin engine's ServeHTTP with loadshedder
+    handler := mw.Handler(engine)
+
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+### With Waiting Queue
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+
+    "github.com/pior/loadshedder"
+)
+
+func main() {
+    // Allow up to 100 concurrent requests + 20 waiting
+    ls := loadshedder.New(loadshedder.Config{
+        Limit:        100,
+        WaitingLimit: 20, // Allow 20 requests to wait for a slot
+    })
+
+    mw := loadshedder.NewMiddleware(ls)
+
+    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Request processed successfully\n")
+    }))
+
+    log.Fatal(http.ListenAndServe(":8080", handler))
 }
 ```
 
@@ -115,26 +148,25 @@ package main
 import (
     "log"
     "net/http"
-    "time"
 
     "github.com/pior/loadshedder"
 )
 
 type metricsReporter struct{}
 
-func (r *metricsReporter) OnAccepted(req *http.Request, current, limit int) {
-    log.Printf("Accepted: %s %s (concurrency: %d/%d)",
-        req.Method, req.URL.Path, current, limit)
+func (r *metricsReporter) OnAccepted(req *http.Request, stats loadshedder.Stats) {
+    log.Printf("Accepted: %s %s (running: %d/%d, waiting: %d)",
+        req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
 }
 
-func (r *metricsReporter) OnRejected(req *http.Request, current, limit int) {
-    log.Printf("Rejected: %s %s (concurrency: %d/%d)",
-        req.Method, req.URL.Path, current, limit)
+func (r *metricsReporter) OnRejected(req *http.Request, stats loadshedder.Stats) {
+    log.Printf("Rejected: %s %s (running: %d/%d, waiting: %d)",
+        req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
 }
 
-func (r *metricsReporter) OnCompleted(req *http.Request, current, limit int, duration time.Duration) {
-    log.Printf("Completed: %s %s (duration: %v, remaining: %d/%d)",
-        req.Method, req.URL.Path, duration, current, limit)
+func (r *metricsReporter) OnCompleted(req *http.Request, stats loadshedder.Stats) {
+    log.Printf("Completed: %s %s (running: %d/%d, waiting: %d)",
+        req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
 }
 
 func main() {
@@ -142,50 +174,57 @@ func main() {
         Limit: 100,
     })
 
-    mw := loadshedder.NewMiddleware(ls, loadshedder.WithReporter(&metricsReporter{}))
+    mw := loadshedder.NewMiddleware(ls)
+    mw.Reporter = &metricsReporter{}
 
     handler := mw.Handler(http.DefaultServeMux)
     log.Fatal(http.ListenAndServe(":8080", handler))
 }
 ```
 
-### With QoS
+### Framework-Agnostic Usage (Direct)
 
 ```go
 package main
 
 import (
+    "context"
+    "fmt"
     "log"
-    "net/http"
-    "time"
 
     "github.com/pior/loadshedder"
 )
 
 func main() {
-    // Enable QoS mode: only reject if projected wait > 200ms
-    // This allows brief bursts over the limit without rejecting requests
     ls := loadshedder.New(loadshedder.Config{
-        Limit:       100,
-        MaxWaitTime: 200 * time.Millisecond,
+        Limit:        10,
+        WaitingLimit: 5,
     })
 
-    mw := loadshedder.NewMiddleware(ls)
+    ctx := context.Background()
 
-    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // Your application logic
-        processRequest(w, r)
-    }))
+    // Acquire a slot
+    stats, token := ls.Acquire(ctx)
+    defer ls.Release(token)
 
-    log.Fatal(http.ListenAndServe(":8080", handler))
+    if !token.Accepted() {
+        log.Printf("Request rejected (running: %d/%d, waiting: %d)",
+            stats.Running, stats.Limit, stats.Waiting)
+        return
+    }
+
+    // Process request
+    fmt.Println("Processing request...")
+
+    // Token is released automatically by defer
 }
 ```
 
-**How QoS Works:**
-- The loadshedder tracks the exponential moving average of request durations
-- When concurrency exceeds the limit, it calculates: `projected_wait = (current - limit) × avg_duration`
-- Requests are only rejected if `projected_wait > maxWaitTime`
-- This reduces unnecessary 429s when requests complete quickly
+**How Waiting Works:**
+- When `WaitingLimit = 0` (default): immediate rejection when at limit
+- When `WaitingLimit > 0`: requests wait on a semaphore for up to `limit + waitingLimit` total
+- Waiting requests acquire slots as they become available (FIFO via semaphore)
+- Context cancellation immediately releases waiting requests
 
 ## API Reference
 
@@ -193,9 +232,18 @@ func main() {
 
 ```go
 type Config struct {
-    Limit       int           // Maximum concurrent requests (required, must be positive)
-    MaxWaitTime time.Duration // Enable QoS if > 0 (optional, default: 0)
-    EMAAlpha    float64       // EMA smoothing factor (optional, default: 0.1, must be 0 < alpha < 1)
+    Limit        int64 // Maximum concurrent requests (required, must be positive)
+    WaitingLimit int64 // Maximum waiting requests (optional, default: 0, must be non-negative)
+}
+
+type Stats struct {
+    Running int64 // Current number of running requests
+    Waiting int64 // Current number of waiting requests
+    Limit   int64 // The configured limit
+}
+
+type Token struct {
+    // Opaque type - use methods to interact
 }
 
 func New(cfg Config) *Loadshedder
@@ -204,18 +252,29 @@ func New(cfg Config) *Loadshedder
 Creates a new framework-agnostic concurrency limiter.
 
 **Methods:**
-- `Acquire() Token` - Acquire a slot. Always returns a Token. Check `token.Accepted()` to see if request was accepted.
-- `Current() int` - Get current concurrency level.
-- `Limit() int` - Get the configured limit.
+- `Acquire(ctx context.Context) (Stats, *Token)` - Acquire a slot. Always returns Stats and a Token. Check `token.Accepted()` to see if accepted.
+- `Release(token *Token) Stats` - Release the token and return updated Stats. Safe to call even if not accepted or already released.
+- `Stats() Stats` - Get current statistics.
 
 **Token Methods:**
 - `Accepted() bool` - Returns true if the request was accepted (slot acquired), false if rejected.
-- `Release()` - Release the token. Safe to call even if not accepted. Always call in a defer.
+
+**Usage Pattern:**
+```go
+stats, token := loadshedder.Acquire(ctx)
+defer loadshedder.Release(token)
+
+if !token.Accepted() {
+    // Handle rejection
+    return
+}
+// Process request
+```
 
 ### HTTP Middleware
 
 ```go
-func NewMiddleware(loadshedder *Loadshedder, opts ...MiddlewareOption) *Middleware
+func NewMiddleware(loadshedder *Loadshedder) *Middleware
 ```
 
 Creates net/http middleware.
@@ -223,40 +282,16 @@ Creates net/http middleware.
 **Methods:**
 - `Handler(next http.Handler) http.Handler` - Wrap an http.Handler
 
-**Options:**
-- `WithReporter(r Reporter)` - Add observability hooks
-- `WithRejectionHandler(h http.Handler)` - Custom 429 handler
+**Fields (set after creation):**
+- `Reporter Reporter` - Observability hooks (optional)
+- `RejectionHandler http.Handler` - Custom 429 handler (optional, has default)
 
 **Reporter Interface:**
 ```go
 type Reporter interface {
-    OnAccepted(r *http.Request, current, limit int)
-    OnRejected(r *http.Request, current, limit int)
-    OnCompleted(r *http.Request, current, limit int, duration time.Duration)
-}
-```
-
-### Gin Middleware (ginloadshedder)
-
-```go
-func New(loadshedder *loadshedder.Loadshedder, opts ...Option) *Middleware
-```
-
-Creates Gin middleware.
-
-**Methods:**
-- `Handler() gin.HandlerFunc` - Returns a Gin middleware function
-
-**Options:**
-- `WithReporter(r Reporter)` - Add observability hooks
-- `WithRejectionHandler(h gin.HandlerFunc)` - Custom 429 handler
-
-**Reporter Interface:**
-```go
-type Reporter interface {
-    OnAccepted(c *gin.Context, current, limit int)
-    OnRejected(c *gin.Context, current, limit int)
-    OnCompleted(c *gin.Context, current, limit int, duration time.Duration)
+    OnAccepted(r *http.Request, stats Stats)
+    OnRejected(r *http.Request, stats Stats)
+    OnCompleted(r *http.Request, stats Stats)
 }
 ```
 
@@ -264,61 +299,73 @@ type Reporter interface {
 
 ### Framework-Agnostic Core
 
-The core `Loadshedder` has no framework dependencies, making it usable with any Go web framework. Framework-specific adapters can be created as needed.
-
-### Separate Module for Gin
-
-The Gin middleware lives in a separate Go module (`ginloadshedder`) to avoid adding Gin as a dependency to the core library. This keeps the core library lightweight.
+The core `Loadshedder` has no HTTP or framework dependencies, making it usable with any Go application that needs concurrency limiting. The net/http middleware works with any framework that can wrap standard handlers (Gin, Echo, Chi, etc.).
 
 ### Config Struct Pattern
 
-The library uses a `Config` struct for configuration instead of functional options. This provides:
-- Clear, self-documenting configuration
-- Easy to see all available options in one place
-- Simple to add new configuration fields
+The library uses a simple `Config` struct for loadshedder configuration:
+- Clear, self-documenting configuration with two simple fields
+- Easy to understand at a glance
 - No need to memorize option function names
+- Middleware-specific configuration (Reporter, RejectionHandler) set on middleware instance
 
 ### Token-Based API
 
-The `Acquire()` method always returns a `Token` value (not a pointer) that:
-- Automatically tracks the start time for duration measurement
+The `Acquire(ctx)` method always returns a `Token` pointer that:
 - Provides an `Accepted()` method to check if the request was accepted
-- Has a `Release()` method that's safe to call unconditionally in a defer
+- Can be safely passed to `Release()` even if rejected or already released
+- Internal `atomic.Bool` prevents double-release bugs
+- Eliminates nil checks - token is never nil
 
-This design eliminates nil checks and makes the API safer and more convenient. You can always defer `token.Release()` immediately after acquiring, regardless of whether the request was accepted.
+This design makes the API safer and more convenient. You can always `defer loadshedder.Release(token)` immediately after `Acquire()`, regardless of whether the request was accepted.
+
+### Semaphore-Based Waiting
+
+Uses `golang.org/x/sync/semaphore` for coordinated waiting:
+- Proven, well-tested implementation
+- FIFO fairness for waiting requests
+- Context-aware cancellation
+- Simple and predictable behavior
+
+### Stats-Based Observability
+
+All operations return `Stats` showing current state:
+- `Running`: actual concurrent requests being processed
+- `Waiting`: requests waiting for a slot
+- `Limit`: configured concurrency limit
+- Reporter callbacks receive `Stats` for rich observability
 
 ### No X-RateLimit-* Headers
 
-This is a per-process limiter. In load-balanced scenarios, per-process limits don't provide meaningful rate limit information to clients. Only `Retry-After` header is included.
+This is a per-process limiter. In load-balanced scenarios, per-process limits don't provide meaningful rate limit information to clients. Only `Retry-After` header is included in middleware rejections.
 
 ## Performance
 
-Minimal overhead with lock-free implementation:
+Minimal overhead with atomic operations and efficient semaphores:
 
 ```
-BenchmarkLoadshedder-10          	34567890	        34.2 ns/op
-BenchmarkLoadshedder_WithQoS-10  	32109876	        37.8 ns/op
-BenchmarkMiddleware-10           	 2847354	       421 ns/op
+BenchmarkLimiter-10              	~35 ns/op per acquire+release
+BenchmarkMiddleware-10           	~420 ns/op per HTTP request
 ```
+
+Lock-free atomic counters provide minimal overhead. Semaphore operations only occur when at capacity, keeping the happy path fast.
 
 ## Testing
 
 ```bash
-# Test core library
+# Run all tests with coverage
 go test -cover ./...
 
-# Test with race detector
+# Run tests with race detector
 go test -race ./...
 
-# Test Gin middleware (separate module)
-cd ginloadshedder && go test -cover
+# Run benchmarks
+go test -bench=. -benchmem
 ```
 
 ## Examples
 
-See the [examples](examples/) directory for complete working examples:
-- `examples/http` - net/http example
-- `examples/gin` - Gin example
+See the [examples](examples/) directory for complete working examples showing integration with various frameworks.
 
 ## License
 

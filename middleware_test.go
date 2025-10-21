@@ -15,15 +15,15 @@ type testReporter struct {
 	completed atomic.Int64
 }
 
-func (tr *testReporter) OnAccepted(r *http.Request, current, limit int) {
+func (tr *testReporter) OnAccepted(r *http.Request, stats Stats) {
 	tr.accepted.Add(1)
 }
 
-func (tr *testReporter) OnRejected(r *http.Request, current, limit int) {
+func (tr *testReporter) OnRejected(r *http.Request, stats Stats) {
 	tr.rejected.Add(1)
 }
 
-func (tr *testReporter) OnCompleted(r *http.Request, current, limit int, duration time.Duration) {
+func (tr *testReporter) OnCompleted(r *http.Request, stats Stats) {
 	tr.completed.Add(1)
 }
 
@@ -90,7 +90,8 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 func TestMiddleware_WithReporter(t *testing.T) {
 	limiter := New(Config{Limit: 2})
 	reporter := &testReporter{}
-	mw := NewMiddleware(limiter, WithReporter(reporter))
+	mw := NewMiddleware(limiter)
+	mw.Reporter = reporter
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond)
@@ -119,13 +120,13 @@ func TestMiddleware_WithReporter(t *testing.T) {
 
 func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 	limiter := New(Config{Limit: 1})
-	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	mw := NewMiddleware(limiter)
+	mw.RejectionHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom", "rejection")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("custom rejection"))
 	})
-
-	mw := NewMiddleware(limiter, WithRejectionHandler(customHandler))
 
 	blocker := make(chan struct{})
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
