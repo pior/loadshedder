@@ -382,3 +382,310 @@ func BenchmarkLoadshedder_WithReporter(b *testing.B) {
 		}
 	})
 }
+
+// QoS Tests
+
+func TestWithEMAAlpha_PanicsWithInvalidValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		alpha float64
+	}{
+		{"zero", 0.0},
+		{"negative", -0.1},
+		{"one", 1.0},
+		{"greater than one", 1.5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("expected panic with alpha=%f", tt.alpha)
+				}
+			}()
+			New(10, WithEMAAlpha(tt.alpha))
+		})
+	}
+}
+
+func TestQoS_WithMaxWaitTime_AcceptsOverLimit(t *testing.T) {
+	// Create a load shedder with limit=2 and maxWaitTime=500ms
+	ls := New(2, WithMaxWaitTime(500*time.Millisecond))
+
+	// First, establish an average duration by processing some requests
+	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond) // Fast requests
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Process a few requests to establish the average
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	// Now create blocking requests to fill the limit
+	blocker := make(chan struct{})
+	blockingHandler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blocker
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Start 2 requests that block (at the limit)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			blockingHandler.ServeHTTP(rec, req)
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a request that's over the limit (in a goroutine to avoid blocking)
+	// Projected wait = 1 (over limit) * ~50ms (avg) = ~50ms < 500ms threshold
+	// Should be ACCEPTED
+	wg.Add(1)
+	var overLimitCode int
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		blockingHandler.ServeHTTP(rec, req)
+		overLimitCode = rec.Code
+	}()
+
+	// Unblock all requests
+	time.Sleep(50 * time.Millisecond)
+	close(blocker)
+	wg.Wait()
+
+	// This should NOT be a 429, because projected wait is small
+	if overLimitCode == http.StatusTooManyRequests {
+		t.Error("expected request to be accepted due to low projected wait time")
+	}
+}
+
+func TestQoS_WithMaxWaitTime_RejectsHighProjectedWait(t *testing.T) {
+	// Create a load shedder with limit=2 and maxWaitTime=50ms
+	ls := New(2, WithMaxWaitTime(50*time.Millisecond))
+
+	// First, establish a long average duration
+	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond) // Slow requests
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Process a few requests to establish the average
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	// Now create blocking requests to fill the limit
+	blocker := make(chan struct{})
+	blockingHandler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blocker
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Start 2 requests that block (at the limit)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			blockingHandler.ServeHTTP(rec, req)
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a request that's over the limit
+	// Projected wait = 1 * ~200ms = ~200ms > 50ms threshold
+	// Should be REJECTED
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	blockingHandler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d (projected wait should exceed threshold)", rec.Code)
+	}
+
+	close(blocker)
+	wg.Wait()
+}
+
+func TestQoS_WithoutMaxWaitTime_AlwaysRejects(t *testing.T) {
+	// No maxWaitTime means Phase 1 behavior (always reject over limit)
+	ls := New(2)
+
+	blocker := make(chan struct{})
+	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blocker
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Fill the limit
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// This should always be rejected (Phase 1 behavior)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 without maxWaitTime, got %d", rec.Code)
+	}
+
+	close(blocker)
+	wg.Wait()
+}
+
+func TestQoS_EMAUpdates(t *testing.T) {
+	ls := New(10)
+
+	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Process a request
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Check that avgDuration was updated
+	avgNanos := ls.avgDuration.Load()
+	if avgNanos == 0 {
+		t.Error("expected avgDuration to be updated after request")
+	}
+
+	avgDuration := time.Duration(avgNanos)
+	if avgDuration < 100*time.Millisecond {
+		t.Errorf("expected avgDuration >= 100ms, got %v", avgDuration)
+	}
+
+	// Process another request with different duration
+	handler2 := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec2 := httptest.NewRecorder()
+	handler2.ServeHTTP(rec2, req2)
+
+	// EMA should have moved toward the new value
+	newAvgNanos := ls.avgDuration.Load()
+	if newAvgNanos <= avgNanos {
+		t.Error("expected avgDuration to increase after slower request")
+	}
+}
+
+func TestQoS_ProjectedWaitTimeCalculation(t *testing.T) {
+	ls := New(5)
+
+	// Manually set avgDuration to 100ms for predictable testing
+	ls.avgDuration.Store(uint64(100 * time.Millisecond))
+
+	tests := []struct {
+		current  int
+		expected time.Duration
+	}{
+		{current: 3, expected: 0},                       // Under limit
+		{current: 5, expected: 0},                       // At limit
+		{current: 6, expected: 100 * time.Millisecond},  // 1 over
+		{current: 8, expected: 300 * time.Millisecond},  // 3 over
+		{current: 10, expected: 500 * time.Millisecond}, // 5 over
+	}
+
+	for _, tt := range tests {
+		t.Run(string(rune(tt.current)), func(t *testing.T) {
+			projected := ls.calculateProjectedWaitTime(tt.current)
+			if projected != tt.expected {
+				t.Errorf("current=%d: expected %v, got %v", tt.current, tt.expected, projected)
+			}
+		})
+	}
+}
+
+func TestQoS_NoHistoricalData(t *testing.T) {
+	// With no historical data, projected wait should be 0
+	ls := New(2, WithMaxWaitTime(100*time.Millisecond))
+
+	blocker := make(chan struct{})
+	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blocker
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Fill the limit
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// With no history, projected wait = 0, so should be accepted (in goroutine to avoid blocking)
+	wg.Add(1)
+	var overLimitCode int
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		overLimitCode = rec.Code
+	}()
+
+	// Unblock all requests
+	time.Sleep(50 * time.Millisecond)
+	close(blocker)
+	wg.Wait()
+
+	// Should be accepted because there's no historical data yet
+	if overLimitCode == http.StatusTooManyRequests {
+		t.Error("expected request to be accepted with no historical data")
+	}
+}
+
+func BenchmarkLoadshedder_WithQoS(b *testing.B) {
+	ls := New(100, WithMaxWaitTime(100*time.Millisecond))
+	handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}
+	})
+}

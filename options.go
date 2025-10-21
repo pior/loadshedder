@@ -1,6 +1,9 @@
 package loadshedder
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 // Option configures a Loadshedder.
 type Option func(*Loadshedder)
@@ -17,5 +20,35 @@ func WithReporter(r Reporter) Option {
 func WithRejectionHandler(h http.Handler) Option {
 	return func(ls *Loadshedder) {
 		ls.rejectionHandler = h
+	}
+}
+
+// WithMaxWaitTime enables QoS-based rejection: only reject requests if the
+// projected wait time exceeds the specified duration. This reduces unnecessary
+// 429 responses when requests complete quickly.
+//
+// The projected wait time is calculated as:
+//   (current_concurrency - limit) * exponential_moving_average(request_duration)
+//
+// If maxWaitTime is 0 (default), all requests exceeding the limit are rejected
+// immediately (Phase 1 behavior).
+func WithMaxWaitTime(maxWaitTime time.Duration) Option {
+	return func(ls *Loadshedder) {
+		ls.maxWaitTime = maxWaitTime
+	}
+}
+
+// WithEMAAlpha sets the smoothing factor for the exponential moving average
+// of request durations. Alpha must be between 0 and 1 (exclusive).
+// Higher values give more weight to recent observations.
+// Default is 0.1.
+//
+// This option is typically used for fine-tuning the QoS behavior.
+func WithEMAAlpha(alpha float64) Option {
+	return func(ls *Loadshedder) {
+		if alpha <= 0 || alpha >= 1 {
+			panic("loadshedder: emaAlpha must be between 0 and 1 (exclusive)")
+		}
+		ls.emaAlpha = alpha
 	}
 }

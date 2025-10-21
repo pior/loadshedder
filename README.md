@@ -6,39 +6,33 @@ A modern Go HTTP middleware for limiting concurrent request processing to preven
 
 In distributed systems, clients often retry failed requests, which can exacerbate server overload. When a server is overwhelmed and starts rejecting requests with 429 (Too Many Requests), aggressive client retries can make the situation worse.
 
-`loadshedder` aims to provide intelligent concurrency limiting that:
+`loadshedder` provides intelligent concurrency limiting with two operating modes:
 
-1. **Phase 1 (Current)**: Enforces a hard concurrency limit by rejecting requests when the limit is exceeded
-2. **Phase 2 (Planned)**: Reduces unnecessary rejections by only rejecting requests when the projected wait time exceeds a configurable threshold
+1. **Phase 1 - Hard Limit**: Enforces a strict concurrency limit by rejecting all requests when the limit is exceeded
+2. **Phase 2 - QoS-Based Limiting**: Reduces unnecessary rejections by only rejecting requests when the projected wait time exceeds a configurable threshold
 
 This approach minimizes the number of 429 responses that trigger client retries, improving overall system stability.
 
-## Current State
+## Features
 
-✅ **Phase 1 is complete** with the following features:
+✅ **Both phases are complete** with the following capabilities:
 
-- Hard concurrency limit enforcement
-- Immediate rejection with HTTP 429 when limit exceeded
+**Core Features:**
+- Hard concurrency limit enforcement (Phase 1 behavior, default)
+- QoS-based projected wait time limiting (Phase 2 behavior, opt-in)
+- Immediate rejection with HTTP 429 when appropriate
 - Observability through the `Reporter` interface
 - Customizable rejection responses
 - Zero external dependencies (standard library only)
 - Lock-free implementation using atomic operations
-- Production-ready with 96.9% test coverage
+- Production-ready with 94.4% test coverage
 
-## Future Improvements
-
-🚀 **Phase 2: Projected Wait Time Limiting**
-
-Instead of immediately rejecting all requests when the concurrency limit is reached, the middleware will:
-
-1. Track the exponential moving average of request durations
-2. Calculate projected wait time: `(current_concurrency - limit) × avg_duration`
-3. Only reject requests if projected wait time exceeds a configured `maxWaitTime`
-4. Accept requests that would likely complete quickly even above the limit
-
-This reduces unnecessary 429 responses while still protecting the server from prolonged overload.
-
-The current implementation already tracks request durations through the `Reporter` interface, making this enhancement straightforward to add.
+**QoS Features (Phase 2):**
+- Exponential moving average (EMA) of request durations
+- Projected wait time calculation: `(current_concurrency - limit) × avg_duration`
+- Configurable maximum acceptable wait time
+- Accepts requests over the limit if they'll complete quickly
+- Tunable EMA smoothing factor for different workload characteristics
 
 ## Installation
 
@@ -150,6 +144,40 @@ func main() {
 }
 ```
 
+### With QoS (Phase 2)
+
+```go
+package main
+
+import (
+    "log"
+    "net/http"
+    "time"
+
+    "github.com/pior/loadshedder"
+)
+
+func main() {
+    // Enable QoS mode: only reject if projected wait > 200ms
+    // This allows brief bursts over the limit without rejecting requests
+    ls := loadshedder.New(100,
+        loadshedder.WithMaxWaitTime(200*time.Millisecond))
+
+    handler := ls.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Your application logic
+        processRequest(w, r)
+    }))
+
+    log.Fatal(http.ListenAndServe(":8080", handler))
+}
+```
+
+**How QoS Works:**
+- The middleware tracks the exponential moving average of request durations
+- When concurrency exceeds the limit, it calculates: `projected_wait = (current - limit) × avg_duration`
+- Requests are only rejected if `projected_wait > maxWaitTime`
+- This reduces unnecessary 429s when requests complete quickly
+
 ## API Reference
 
 ### Creating a Loadshedder
@@ -173,6 +201,18 @@ func WithRejectionHandler(h http.Handler) Option
 ```
 
 Sets a custom handler for rejected requests. Default returns HTTP 429 with a `Retry-After: 1` header.
+
+```go
+func WithMaxWaitTime(maxWaitTime time.Duration) Option
+```
+
+Enables QoS-based rejection (Phase 2). Only rejects requests if the projected wait time exceeds the specified duration. When set to `0` (default), all requests exceeding the limit are rejected immediately (Phase 1 behavior).
+
+```go
+func WithEMAAlpha(alpha float64) Option
+```
+
+Sets the smoothing factor for the exponential moving average of request durations. Must be between `0` and `1` (exclusive). Higher values give more weight to recent observations. Default is `0.1`. This is typically used for fine-tuning QoS behavior.
 
 ### Reporter Interface
 
