@@ -180,16 +180,13 @@ The `LogReporter` provides structured logging with all relevant loadshedder fiel
 
 ### With Observability - Prometheus Metrics
 
-For production environments, see the comprehensive [Prometheus metrics example](examples/prometheus/) which demonstrates:
-- Request counters (accepted, rejected, completed)
-- Real-time concurrency and utilization gauges
-- Ready-to-use alerting rules and queries
-- Loadshedder-specific behavior tracking
+The `contrib/loadshedderprom` package provides ready-to-use Prometheus integration:
 
 ```go
-// See examples/prometheus/main.go for complete implementation
-reporter := NewPrometheusReporter("myapp")
-mw.Reporter = reporter
+import "github.com/pior/loadshedder/contrib/loadshedderprom"
+
+mw := loadshedder.NewMiddleware(ls)
+mw.Reporter = loadshedderprom.NewReporter("myapp")
 ```
 
 **Metrics exported:**
@@ -201,6 +198,8 @@ mw.Reporter = reporter
 - `myapp_utilization_ratio` - Current utilization (running/limit)
 
 These metrics focus specifically on loadshedder behavior. For general request metrics (latency, response codes), use a separate observability middleware.
+
+For a complete example with alerting rules and queries, see [examples/prometheus](examples/prometheus/).
 
 ### Framework-Agnostic Usage (Direct)
 
