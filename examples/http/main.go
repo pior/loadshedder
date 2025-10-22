@@ -12,18 +12,13 @@ import (
 // exampleReporter demonstrates observability integration
 type exampleReporter struct{}
 
-func (r *exampleReporter) OnAccepted(req *http.Request, stats loadshedder.Stats) {
+func (r *exampleReporter) Accepted(req *http.Request, stats loadshedder.Stats) {
 	log.Printf("ACCEPTED: %s %s (running=%d/%d, waiting=%d)",
 		req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
 }
 
-func (r *exampleReporter) OnRejected(req *http.Request, stats loadshedder.Stats) {
+func (r *exampleReporter) Rejected(req *http.Request, stats loadshedder.Stats) {
 	log.Printf("REJECTED: %s %s (running=%d/%d, waiting=%d)",
-		req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
-}
-
-func (r *exampleReporter) OnCompleted(req *http.Request, stats loadshedder.Stats) {
-	log.Printf("COMPLETED: %s %s (running=%d/%d, waiting=%d)",
 		req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
 }
 
@@ -32,8 +27,7 @@ func main() {
 	ls := loadshedder.New(loadshedder.Config{Limit: 10})
 
 	// Create HTTP middleware with reporter for observability
-	mw := loadshedder.NewMiddleware(ls)
-	mw.Reporter = &exampleReporter{}
+	mw := loadshedder.NewMiddleware(ls, &exampleReporter{}, loadshedder.NewRejectionHandler(5))
 
 	// Wrap your handler
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

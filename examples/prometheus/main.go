@@ -21,8 +21,7 @@ func main() {
 	})
 
 	// Create middleware with Prometheus reporter
-	mw := loadshedder.NewMiddleware(ls)
-	mw.Reporter = loadshedderprom.NewReporter("myapp")
+	mw := loadshedder.NewMiddleware(ls, loadshedderprom.NewReporter("myapp"), loadshedder.NewRejectionHandler(5))
 
 	// Create a simple handler that simulates work
 	mux := http.NewServeMux()

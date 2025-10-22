@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestLogReporter_OnAccepted(t *testing.T) {
+func TestLogReporter_Accepted(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -21,7 +21,7 @@ func TestLogReporter_OnAccepted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", http.NoBody)
 	stats := Stats{Running: 5, Waiting: 2, Limit: 10}
 
-	reporter.OnAccepted(req, stats)
+	reporter.Accepted(req, stats)
 
 	output := buf.String()
 	if !strings.Contains(output, "Request accepted") {
@@ -47,7 +47,7 @@ func TestLogReporter_OnAccepted(t *testing.T) {
 	}
 }
 
-func TestLogReporter_OnRejected(t *testing.T) {
+func TestLogReporter_Rejected(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -58,7 +58,7 @@ func TestLogReporter_OnRejected(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/data", http.NoBody)
 	stats := Stats{Running: 10, Waiting: 5, Limit: 10}
 
-	reporter.OnRejected(req, stats)
+	reporter.Rejected(req, stats)
 
 	output := buf.String()
 	if !strings.Contains(output, "Request rejected") {
@@ -82,8 +82,7 @@ func TestLogReporter_Integration(t *testing.T) {
 	}))
 
 	limiter := New(Config{Limit: 2})
-	mw := NewMiddleware(limiter)
-	mw.Reporter = NewLogReporter(logger)
+	mw := NewMiddleware(limiter, NewLogReporter(logger), NewRejectionHandler(5))
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond)
@@ -111,6 +110,6 @@ func TestLogReporter_NilLogger(t *testing.T) {
 	stats := Stats{Running: 1, Waiting: 0, Limit: 10}
 
 	// Should not panic
-	reporter.OnAccepted(req, stats)
-	reporter.OnRejected(req, stats)
+	reporter.Accepted(req, stats)
+	reporter.Rejected(req, stats)
 }
