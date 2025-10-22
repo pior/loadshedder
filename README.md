@@ -61,8 +61,8 @@ func main() {
         Limit: 100,
     })
 
-    // Create HTTP middleware
-    mw := loadshedder.NewMiddleware(ls)
+    // Create HTTP middleware with slog reporter and default rejection handler
+    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
 
     // Wrap your handler
     handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +94,7 @@ func main() {
     })
 
     // Create HTTP middleware
-    mw := loadshedder.NewMiddleware(ls)
+    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
 
     // Wrap the entire Gin engine with the loadshedder
     engine := gin.Default()
@@ -130,7 +130,7 @@ func main() {
         WaitingLimit: 20, // Allow 20 requests to wait for a slot
     })
 
-    mw := loadshedder.NewMiddleware(ls)
+    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
 
     handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         fmt.Fprintf(w, "Request processed successfully\n")
@@ -158,9 +158,8 @@ func main() {
         WaitingLimit: 20,
     })
 
-    mw := loadshedder.NewMiddleware(ls)
     // Use the built-in slog reporter
-    mw.Reporter = loadshedder.NewLogReporter(nil)
+    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
 
     handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.WriteHeader(http.StatusOK)
@@ -185,8 +184,7 @@ The `contrib/loadshedderprom` package provides ready-to-use Prometheus integrati
 ```go
 import "github.com/pior/loadshedder/contrib/loadshedderprom"
 
-mw := loadshedder.NewMiddleware(ls)
-mw.Reporter = loadshedderprom.NewReporter("myapp")
+mw := loadshedder.NewMiddleware(ls, loadshedderprom.NewReporter("myapp"), loadshedder.NewRejectionHandler(5))
 ```
 
 **Metrics exported:**
@@ -295,23 +293,31 @@ if !token.Accepted() {
 ### HTTP Middleware
 
 ```go
-func NewMiddleware(loadshedder *Loadshedder) *Middleware
+func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler func(Stats) http.HandlerFunc) *Middleware
 ```
 
-Creates net/http middleware.
+Creates net/http middleware. Panics if reporter or rejectionHandler is nil.
+
+**Parameters:**
+- `loadshedder` - The Loadshedder instance
+- `reporter` - Observability hooks (use `NewLogReporter(nil)` for slog-based logging)
+- `rejectionHandler` - Function that receives Stats and returns an http.HandlerFunc for handling rejections
 
 **Methods:**
 - `Handler(next http.Handler) http.Handler` - Wrap an http.Handler
 
-**Fields (set after creation):**
-- `Reporter Reporter` - Observability hooks (optional)
-- `RejectionHandler http.Handler` - Custom 429 handler (optional, has default)
+**Rejection Handler:**
+```go
+func NewRejectionHandler(retryAfterSeconds int) func(Stats) http.HandlerFunc
+```
+
+Creates a rejection handler function that responds with HTTP 429 (Too Many Requests) and a `Retry-After` header. The handler receives Stats which can be used to customize the response.
 
 **Reporter Interface:**
 ```go
 type Reporter interface {
-    OnAccepted(r *http.Request, stats Stats)
-    OnRejected(r *http.Request, stats Stats)
+    Accepted(r *http.Request, stats Stats)
+    Rejected(r *http.Request, stats Stats)
 }
 ```
 

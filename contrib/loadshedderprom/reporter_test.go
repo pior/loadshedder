@@ -11,7 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestReporter_OnAccepted(t *testing.T) {
+func TestReporter_Accepted(t *testing.T) {
 	// Use a custom registry to avoid conflicts with global metrics
 	registry := prometheus.NewRegistry()
 
@@ -58,7 +58,7 @@ func TestReporter_OnAccepted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", http.NoBody)
 	stats := loadshedder.Stats{Running: 5, Waiting: 2, Limit: 10, WaitTime: 50 * time.Millisecond}
 
-	reporter.OnAccepted(req, stats)
+	reporter.Accepted(req, stats)
 
 	// Verify counter was incremented
 	if count := testutil.ToFloat64(reporter.requestsAccepted); count != 1 {
@@ -85,7 +85,7 @@ func TestReporter_OnAccepted(t *testing.T) {
 	}
 }
 
-func TestReporter_OnRejected(t *testing.T) {
+func TestReporter_Rejected(t *testing.T) {
 	// Use a custom registry to avoid conflicts with global metrics
 	registry := prometheus.NewRegistry()
 
@@ -131,7 +131,7 @@ func TestReporter_OnRejected(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/data", http.NoBody)
 	stats := loadshedder.Stats{Running: 10, Waiting: 5, Limit: 10, WaitTime: 0}
 
-	reporter.OnRejected(req, stats)
+	reporter.Rejected(req, stats)
 
 	// Verify counter was incremented
 	if count := testutil.ToFloat64(reporter.requestsRejected); count != 1 {
@@ -157,11 +157,10 @@ func TestReporter_Integration(t *testing.T) {
 	// without actually checking metrics (to avoid registry conflicts)
 
 	limiter := loadshedder.New(loadshedder.Config{Limit: 2})
-	mw := loadshedder.NewMiddleware(limiter)
 
 	// Use the standard constructor which uses promauto (global registry)
 	reporter := NewReporter("integration_test")
-	mw.Reporter = reporter
+	mw := loadshedder.NewMiddleware(limiter, reporter, loadshedder.NewRejectionHandler(5))
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

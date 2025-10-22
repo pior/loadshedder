@@ -23,7 +23,7 @@ func NewLogReporter(logger *slog.Logger) *LogReporter {
 	}
 }
 
-func (r *LogReporter) OnAccepted(req *http.Request, stats Stats) {
+func (r *LogReporter) Accepted(req *http.Request, stats Stats) {
 	r.logger.InfoContext(
 		req.Context(),
 		"Request accepted",
@@ -38,7 +38,7 @@ func (r *LogReporter) OnAccepted(req *http.Request, stats Stats) {
 	)
 }
 
-func (r *LogReporter) OnRejected(req *http.Request, stats Stats) {
+func (r *LogReporter) Rejected(req *http.Request, stats Stats) {
 	r.logger.WarnContext(
 		req.Context(),
 		"Request rejected - concurrency limit exceeded",

@@ -2,32 +2,45 @@ package loadshedder
 
 import (
 	"net/http"
+	"strconv"
 )
+
+// RejectionHandler is a function that receives Stats and returns an http.HandlerFunc
+// to handle rejected requests. This allows customizing the rejection response based
+// on current concurrency state.
+type RejectionHandler func(Stats) http.HandlerFunc
 
 // Middleware wraps an http.Handler with concurrency limiting.
 type Middleware struct {
 	loadshedder      *Loadshedder
-	Reporter         Reporter
-	RejectionHandler http.Handler
+	reporter         Reporter
+	rejectionHandler RejectionHandler
 }
 
 // Reporter provides hooks for observability into the middleware's behavior.
 type Reporter interface {
-	// OnAccepted is called when a request is accepted and will be processed.
-	OnAccepted(*http.Request, Stats)
+	// Accepted is called when a request is accepted and will be processed.
+	Accepted(*http.Request, Stats)
 
-	// OnRejected is called when a request is rejected due to concurrency limit.
-	OnRejected(*http.Request, Stats)
+	// Rejected is called when a request is rejected due to concurrency limit.
+	Rejected(*http.Request, Stats)
 }
 
-// NewMiddleware creates a new HTTP middleware with the given loadshedder.
-func NewMiddleware(loadshedder *Loadshedder) *Middleware {
-	m := &Middleware{
-		loadshedder:      loadshedder,
-		RejectionHandler: defaultRejectionHandler(),
+// NewMiddleware creates a new HTTP middleware with the given loadshedder, reporter, and rejection handler.
+// Panics if reporter or rejectionHandler is nil.
+func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler RejectionHandler) *Middleware {
+	if reporter == nil {
+		panic("loadshedder: reporter cannot be nil")
+	}
+	if rejectionHandler == nil {
+		panic("loadshedder: rejectionHandler cannot be nil")
 	}
 
-	return m
+	return &Middleware{
+		loadshedder:      loadshedder,
+		reporter:         reporter,
+		rejectionHandler: rejectionHandler,
+	}
 }
 
 // Handler wraps the given http.Handler with concurrency limiting.
@@ -35,30 +48,28 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stats, token := m.loadshedder.Acquire(r.Context())
 		if !token.Accepted() {
-			// Request rejected
-			if m.Reporter != nil {
-				m.Reporter.OnRejected(r, stats)
-			}
-			m.RejectionHandler.ServeHTTP(w, r)
+			m.reporter.Rejected(r, stats)
+			m.rejectionHandler(stats).ServeHTTP(w, r)
 			return
 		}
 
-		// Request accepted
 		defer m.loadshedder.Release(token)
 
-		if m.Reporter != nil {
-			m.Reporter.OnAccepted(r, stats)
-		}
-
+		m.reporter.Accepted(r, stats)
 		next.ServeHTTP(w, r)
 	})
 }
 
-// defaultRejectionHandler returns a simple 429 response with Retry-After header set to 1s.
-func defaultRejectionHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Retry-After", "1")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte("Too Many Requests\n"))
-	})
+// NewRejectionHandler creates a rejection handler function that responds with HTTP 429
+// and a Retry-After header. The handler receives Stats which can be used to customize
+// the response.
+func NewRejectionHandler(retryAfterSeconds int) RejectionHandler {
+	retryAfter := strconv.Itoa(retryAfterSeconds)
+	return func(_ Stats) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", retryAfter)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("Too Many Requests\n"))
+		}
+	}
 }

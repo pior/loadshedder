@@ -71,15 +71,15 @@ func NewReporter(namespace string) *Reporter {
 	return r
 }
 
-// OnAccepted is called when a request is accepted.
-func (r *Reporter) OnAccepted(req *http.Request, stats loadshedder.Stats) {
+// Accepted is called when a request is accepted.
+func (r *Reporter) Accepted(req *http.Request, stats loadshedder.Stats) {
 	r.requestsAccepted.Inc()
 	r.waitTimeSeconds.Observe(stats.WaitTime.Seconds())
 	r.updateGauges(stats)
 }
 
-// OnRejected is called when a request is rejected.
-func (r *Reporter) OnRejected(req *http.Request, stats loadshedder.Stats) {
+// Rejected is called when a request is rejected.
+func (r *Reporter) Rejected(req *http.Request, stats loadshedder.Stats) {
 	r.requestsRejected.Inc()
 	r.waitTimeSeconds.Observe(stats.WaitTime.Seconds())
 	r.updateGauges(stats)
