@@ -184,22 +184,15 @@ if !token.Accepted() {
 func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler RejectionHandler) *Middleware
 ```
 
-Creates net/http middleware. Panics if reporter or rejectionHandler is nil.
+Creates net/http middleware.
 
 **Parameters:**
 - `loadshedder` - The Loadshedder instance
-- `reporter` - Observability hooks (use `NewLogReporter(nil)` for slog-based logging)
-- `rejectionHandler` - Function that receives Stats and returns an http.HandlerFunc for handling rejections
+- `reporter` - Observability hooks (nil defaults to NullReporter, use `NewLogReporter(nil)` for slog-based logging)
+- `rejectionHandler` - Function that receives Stats and returns an http.HandlerFunc (nil defaults to HTTP 429 with Retry-After: 5s)
 
 **Methods:**
 - `Handler(next http.Handler) http.Handler` - Wrap an http.Handler
-
-**Rejection Handler:**
-```go
-func NewRejectionHandler(retryAfterSeconds int) func(Stats) http.HandlerFunc
-```
-
-Creates a rejection handler function that responds with HTTP 429 (Too Many Requests) and a `Retry-After` header. The handler receives Stats which can be used to customize the response.
 
 **Reporter Interface:**
 ```go
@@ -210,6 +203,18 @@ type Reporter interface {
 ```
 
 The Reporter interface provides hooks for observability focused on request **in-flow** (accepted vs rejected). For tracking request completion, latency, or response codes, use a separate application-level observability middleware.
+
+**Built-in Reporters:**
+- `NewNullReporter()` - No-op reporter that discards all events (default when nil)
+- `NewLogReporter(logger *slog.Logger)` - Structured logging via slog (nil uses slog.Default())
+- `loadshedderprom.NewReporter(namespace)` - Prometheus metrics (see contrib/loadshedderprom)
+
+**Rejection Handler:**
+```go
+func NewRejectionHandler(retryAfterSeconds int) RejectionHandler
+```
+
+Creates a rejection handler function that responds with HTTP 429 (Too Many Requests) and a `Retry-After` header. The handler receives Stats which can be used to customize the response.
 
 ## Design Decisions
 

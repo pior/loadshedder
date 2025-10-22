@@ -5,6 +5,21 @@ import (
 	"net/http"
 )
 
+// NullReporter is a no-op Reporter implementation that discards all events.
+// Useful when you don't need observability or want to use external metrics only.
+type NullReporter struct{}
+
+// NewNullReporter creates a new no-op reporter.
+func NewNullReporter() *NullReporter {
+	return &NullReporter{}
+}
+
+// Accepted does nothing.
+func (r *NullReporter) Accepted(*http.Request, Stats) {}
+
+// Rejected does nothing.
+func (r *NullReporter) Rejected(*http.Request, Stats) {}
+
 // LogReporter is a Reporter implementation that logs events using slog.
 // It tracks request latency by recording start times for accepted requests.
 type LogReporter struct {
