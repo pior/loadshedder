@@ -18,9 +18,6 @@ type Reporter interface {
 
 	// OnRejected is called when a request is rejected due to concurrency limit.
 	OnRejected(*http.Request, Stats)
-
-	// OnCompleted is called when a request finishes processing.
-	OnCompleted(*http.Request, Stats)
 }
 
 // NewMiddleware creates a new HTTP middleware with the given loadshedder.
@@ -47,14 +44,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		}
 
 		// Request accepted
-
-		defer func() {
-			stats := m.loadshedder.Release(token)
-
-			if m.Reporter != nil {
-				m.Reporter.OnCompleted(r, stats)
-			}
-		}()
+		defer m.loadshedder.Release(token)
 
 		if m.Reporter != nil {
 			m.Reporter.OnAccepted(r, stats)

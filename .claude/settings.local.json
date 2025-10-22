@@ -11,7 +11,11 @@
       "Bash(go get:*)",
       "Bash(go run:*)",
       "Bash(bud lint:*)",
-      "Bash(golangci-lint run:*)"
+      "Bash(golangci-lint run:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(go mod edit:*)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []

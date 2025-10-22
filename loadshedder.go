@@ -3,15 +3,17 @@ package loadshedder
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 )
 
 // Stats provides current state of the loadshedder.
 type Stats struct {
-	Running int64 // Current number of running requests
-	Waiting int64 // Current number of waiting requests
-	Limit   int64 // The configured concurrency limit
+	Running  int64         // Current number of running requests
+	Waiting  int64         // Current number of waiting requests
+	Limit    int64         // The configured concurrency limit
+	WaitTime time.Duration // Time spent waiting for acquisition (0 if not waited)
 }
 
 // Token represents an acquisition attempt.
@@ -74,16 +76,20 @@ func (l *Loadshedder) Acquire(ctx context.Context) (Stats, *Token) {
 	if current > l.limit+l.waitingLimit {
 		// Release the slot immediately (hard rejection)
 		l.current.Add(-1)
-		return l.stats(current), &Token{}
+		return l.statsWithWait(current, 0), &Token{}
 	}
 
+	// Track wait time for semaphore acquisition
+	start := time.Now()
 	err := l.semaphore.Acquire(ctx, 1)
+	waitTime := time.Since(start)
+
 	if err != nil {
 		current = l.current.Add(-1)
-		return l.stats(current), &Token{}
+		return l.statsWithWait(current, waitTime), &Token{}
 	}
 
-	return l.stats(current), &Token{accepted: true}
+	return l.statsWithWait(current, waitTime), &Token{accepted: true}
 }
 
 // Release releases a token. Safe to call even if not accepted or already released.
@@ -91,21 +97,22 @@ func (l *Loadshedder) Release(t *Token) Stats {
 	if t != nil && t.accepted && t.released.CompareAndSwap(false, true) {
 		l.semaphore.Release(1)
 		current := l.current.Add(-1)
-		return l.stats(current)
+		return l.statsWithWait(current, 0)
 	}
 
-	return l.stats(l.current.Load())
+	return l.statsWithWait(l.current.Load(), 0)
 }
 
 // Stats returns the current statistics.
 func (l *Loadshedder) Stats() Stats {
-	return l.stats(l.current.Load())
+	return l.statsWithWait(l.current.Load(), 0)
 }
 
-func (l *Loadshedder) stats(current int64) Stats {
+func (l *Loadshedder) statsWithWait(current int64, waitTime time.Duration) Stats {
 	return Stats{
-		Running: min(current, l.limit),
-		Waiting: max(0, current-l.limit),
-		Limit:   l.limit,
+		Running:  min(current, l.limit),
+		Waiting:  max(0, current-l.limit),
+		Limit:    l.limit,
+		WaitTime: waitTime,
 	}
 }

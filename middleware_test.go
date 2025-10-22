@@ -10,9 +10,8 @@ import (
 )
 
 type testReporter struct {
-	accepted  atomic.Int64
-	rejected  atomic.Int64
-	completed atomic.Int64
+	accepted atomic.Int64
+	rejected atomic.Int64
 }
 
 func (tr *testReporter) OnAccepted(r *http.Request, stats Stats) {
@@ -21,10 +20,6 @@ func (tr *testReporter) OnAccepted(r *http.Request, stats Stats) {
 
 func (tr *testReporter) OnRejected(r *http.Request, stats Stats) {
 	tr.rejected.Add(1)
-}
-
-func (tr *testReporter) OnCompleted(r *http.Request, stats Stats) {
-	tr.completed.Add(1)
 }
 
 func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
@@ -109,10 +104,6 @@ func TestMiddleware_WithReporter(t *testing.T) {
 		t.Errorf("expected 3 accepted, got %d", reporter.accepted.Load())
 	}
 
-	if reporter.completed.Load() != 3 {
-		t.Errorf("expected 3 completed, got %d", reporter.completed.Load())
-	}
-
 	if reporter.rejected.Load() != 0 {
 		t.Errorf("expected 0 rejected, got %d", reporter.rejected.Load())
 	}
@@ -174,6 +165,57 @@ func BenchmarkMiddleware(b *testing.B) {
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}
+	})
+}
+
+func BenchmarkMiddleware_WithReporter(b *testing.B) {
+	limiter := New(Config{Limit: 100})
+	mw := NewMiddleware(limiter)
+	mw.Reporter = &testReporter{}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}
+	})
+}
+
+func BenchmarkMiddleware_Rejected(b *testing.B) {
+	limiter := New(Config{Limit: 1})
+	mw := NewMiddleware(limiter)
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Fill the limit
+	blocker := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		rec := httptest.NewRecorder()
+		go func() {
+			handler.ServeHTTP(rec, req)
+		}()
+		<-blocker
+	}()
+	defer close(blocker)
+
+	time.Sleep(50 * time.Millisecond)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

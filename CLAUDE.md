@@ -55,17 +55,22 @@ go run main.go
 - `Loadshedder` struct: Framework-agnostic concurrency limiter
 - `Config` struct: Configuration with `Limit` and optional `WaitingLimit`
 - `Token` type: Value-based token with `Accepted()` method and double-release safety
-- `Stats` struct: Provides `Running`, `Waiting`, and `Limit` metrics
+- `Stats` struct: Provides `Running`, `Waiting`, `Limit`, and `WaitTime` metrics
+  - `WaitTime` tracks duration spent waiting for semaphore acquisition
+  - Near-zero (< 1ms) for immediate acceptance
+  - Actual duration for requests that waited
+  - 0 for hard rejections (exceeds limit + waitingLimit)
 - Uses `atomic.Int64` for lock-free concurrency tracking
 - Uses `semaphore.Weighted` from golang.org/x/sync for waiting queue
 
 **middleware.go**
 - `Middleware` struct: net/http adapter for the core loadshedder
 - `Reporter` interface: Observability hooks receiving `Stats`
-- Three lifecycle events: `OnAccepted`, `OnRejected`, `OnCompleted`
+- Two lifecycle events focused on request **in-flow**: `OnAccepted`, `OnRejected`
 - All methods receive `*http.Request` and `Stats` for context-aware logging/metrics
 - Configurable rejection handler (default: 429 with Retry-After header)
 - Works with any framework that can wrap net/http handlers (Gin, Echo, Chi, etc.)
+- No `OnCompleted` - loadshedder focuses on admission control, not request completion tracking
 
 ### Concurrency Model
 
@@ -105,7 +110,8 @@ Tests focus on verifying loadshedder behavior:
 - **Waiting behavior**: Verify requests wait within WaitingLimit and are rejected beyond
 - **Context cancellation**: Verify waiting requests respect context cancellation
 - **Token safety**: Verify double-release and rejected-token-release are safe
-- **Stats accuracy**: Verify Stats correctly report Running, Waiting, and Limit
+- **Stats accuracy**: Verify Stats correctly report Running, Waiting, Limit, and WaitTime
+- **WaitTime tracking**: Verify WaitTime is near-zero for immediate acceptance, tracks actual wait duration, and is 0 for hard rejections
 - **Concurrent correctness**: Race detector enabled, atomic operations
 - **Reporter integration**: Verify all callbacks fire correctly with accurate Stats
 - **Middleware integration**: Verify HTTP middleware properly wraps handlers
