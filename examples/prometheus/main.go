@@ -2,9 +2,9 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -104,14 +104,14 @@ func main() {
 
 	mux.HandleFunc("/api/fast", func(w http.ResponseWriter, r *http.Request) {
 		// Simulate fast request (10-50ms)
-		time.Sleep(time.Duration(10+r.Context().Value("rand").(int)%40) * time.Millisecond)
+		time.Sleep(time.Duration(10+rand.IntN(40)) * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "Fast request completed\n")
 	})
 
 	mux.HandleFunc("/api/slow", func(w http.ResponseWriter, r *http.Request) {
 		// Simulate slow request (100-500ms)
-		time.Sleep(time.Duration(100+r.Context().Value("rand").(int)%400) * time.Millisecond)
+		time.Sleep(time.Duration(100+rand.IntN(400)) * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "Slow request completed\n")
 	})
@@ -125,11 +125,7 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	// Wrap the mux with loadshedder middleware
-	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Add a pseudo-random value to context for demo purposes
-		ctx := context.WithValue(r.Context(), "rand", int(time.Now().UnixNano()%1000))
-		mux.ServeHTTP(w, r.WithContext(ctx))
-	}))
+	handler := mw.Handler(mux)
 
 	log.Println("Server starting on :8080")
 	log.Println("Endpoints:")
