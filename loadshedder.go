@@ -37,7 +37,7 @@ type Config struct {
 	// WaitingLimit is the maximum number of requests allowed to wait.
 	// WaitingLimit is usually a small fraction of Limit, like 20-30%.
 	// If zero, requests are rejected immediately when the concurrency limit is exceeded.
-	// Must be positive.
+	// Optional, default to 0, must be positive.
 	WaitingLimit int64
 }
 

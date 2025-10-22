@@ -27,13 +27,15 @@ type Reporter interface {
 }
 
 // NewMiddleware creates a new HTTP middleware with the given loadshedder, reporter, and rejection handler.
-// Panics if reporter or rejectionHandler is nil.
+// If reporter is nil, a default LogReporter is used.
+// If rejectionHandler is nil, a default handler responding with HTTP 429, and a Retry-After header set to 5s is used.
 func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler RejectionHandler) *Middleware {
 	if reporter == nil {
-		panic("loadshedder: reporter cannot be nil")
+		reporter = NewLogReporter(nil)
 	}
 	if rejectionHandler == nil {
-		panic("loadshedder: rejectionHandler cannot be nil")
+		retryAfter := 5
+		rejectionHandler = NewRejectionHandler(retryAfter)
 	}
 
 	return &Middleware{

@@ -1,5 +1,10 @@
 # loadshedder
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/pior/loadshedder.svg)](https://pkg.go.dev/github.com/pior/loadshedder)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pior/loadshedder)](https://goreportcard.com/report/github.com/pior/loadshedder)
+[![Build Status](https://github.com/pior/loadshedder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pior/loadshedder/actions/workflows/ci.yml)
+
+
 A modern, framework-agnostic Go library for concurrency limiting with optional request queuing to prevent server overload.
 
 ## Goal
@@ -8,199 +13,27 @@ In distributed systems, clients often retry failed requests, which can exacerbat
 
 `loadshedder` provides simple, predictable concurrency limiting. It enforces a strict concurrency limit and optionally allows requests to wait in a bounded queue. This reduces unnecessary 429 responses during brief traffic spikes while protecting against sustained overload—improving overall system stability without complex heuristics.
 
-## Architecture
-
-**Framework-Agnostic Design:**
-- Core `loadshedder` package with no framework dependencies
-- Built-in net/http middleware
-- Works with any framework that can wrap net/http handlers (Gin, Echo, Chi, etc.)
-
 ## Features
 
-**Core Capabilities:**
-- Framework-agnostic concurrency limiter
-- Hard concurrency limit enforcement
-- Optional bounded waiting queue (WaitingLimit)
-- Semaphore-based request coordination
-- Context-aware (respects cancellation)
-- Minimal dependencies (only golang.org/x/sync)
-- Lock-free atomic counters with semaphore coordination
-- Production-ready with >95% test coverage
+- Framework-agnostic concurrency limiter with no HTTP dependencies in core
+- Hard concurrency limit enforcement with optional bounded waiting queue
+- Semaphore-based request coordination (golang.org/x/sync/semaphore)
+- Lock-free atomic counters for tracking running/waiting requests
+- Context-aware (respects cancellation during waiting)
+- Built-in net/http middleware that works with any framework (Gin, Echo, Chi, etc.)
+- Token-based acquire/release API that's safe to use with defer
+- Real-time statistics (running, waiting, limit, wait time)
+- Structured logging via slog and Prometheus metrics support
 
-**Waiting Queue (Optional):**
-- Configure `WaitingLimit` to allow requests to wait when at capacity
-- Requests wait on a semaphore until a slot becomes available
-- Hard rejection when `current > limit + waitingLimit`
-- Respects context cancellation during waiting
-- Real-time stats show Running vs Waiting requests
+## Usage
 
-## Installation
+### Installation
 
 ```bash
 go get github.com/pior/loadshedder
 ```
 
-## Usage
-
-### net/http Basic Example
-
-```go
-package main
-
-import (
-    "fmt"
-    "log"
-    "net/http"
-
-    "github.com/pior/loadshedder"
-)
-
-func main() {
-    // Create a loadshedder with a concurrency limit of 100
-    ls := loadshedder.New(loadshedder.Config{
-        Limit: 100,
-    })
-
-    // Create HTTP middleware with slog reporter and default rejection handler
-    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
-
-    // Wrap your handler
-    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprintf(w, "Request processed successfully\n")
-    }))
-
-    log.Fatal(http.ListenAndServe(":8080", handler))
-}
-```
-
-### Using with Gin (or other frameworks)
-
-Gin and other frameworks can wrap standard net/http handlers:
-
-```go
-package main
-
-import (
-    "net/http"
-
-    "github.com/gin-gonic/gin"
-    "github.com/pior/loadshedder"
-)
-
-func main() {
-    // Create a loadshedder
-    ls := loadshedder.New(loadshedder.Config{
-        Limit: 100,
-    })
-
-    // Create HTTP middleware
-    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
-
-    // Wrap the entire Gin engine with the loadshedder
-    engine := gin.Default()
-
-    engine.GET("/", func(c *gin.Context) {
-        c.String(200, "Request processed successfully\n")
-    })
-
-    // Wrap the Gin engine's ServeHTTP with loadshedder
-    handler := mw.Handler(engine)
-
-    http.ListenAndServe(":8080", handler)
-}
-```
-
-### With Waiting Queue
-
-```go
-package main
-
-import (
-    "fmt"
-    "log"
-    "net/http"
-
-    "github.com/pior/loadshedder"
-)
-
-func main() {
-    // Allow up to 100 concurrent requests + 20 waiting
-    ls := loadshedder.New(loadshedder.Config{
-        Limit:        100,
-        WaitingLimit: 20, // Allow 20 requests to wait for a slot
-    })
-
-    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
-
-    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprintf(w, "Request processed successfully\n")
-    }))
-
-    log.Fatal(http.ListenAndServe(":8080", handler))
-}
-```
-
-### With Observability - Structured Logging (slog)
-
-```go
-package main
-
-import (
-    "log"
-    "net/http"
-
-    "github.com/pior/loadshedder"
-)
-
-func main() {
-    ls := loadshedder.New(loadshedder.Config{
-        Limit:        100,
-        WaitingLimit: 20,
-    })
-
-    // Use the built-in slog reporter
-    mw := loadshedder.NewMiddleware(ls, loadshedder.NewLogReporter(nil), loadshedder.NewRejectionHandler(5))
-
-    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusOK)
-    }))
-
-    log.Fatal(http.ListenAndServe(":8080", handler))
-}
-```
-
-**Output Example:**
-```
-INFO Request accepted method=GET path=/api/data remote_addr=127.0.0.1:54321 running=5 waiting=0 limit=100 utilization=0.05 wait_time=0s
-WARN Request rejected - concurrency limit exceeded method=POST path=/api/data remote_addr=127.0.0.1:54322 running=100 waiting=20 limit=100 utilization=1.0 wait_time=45ms
-```
-
-The `LogReporter` provides structured logging with all relevant loadshedder fields, including `wait_time` which shows how long the request waited before being accepted or rejected.
-
-### With Observability - Prometheus Metrics
-
-The `contrib/loadshedderprom` package provides ready-to-use Prometheus integration:
-
-```go
-import "github.com/pior/loadshedder/contrib/loadshedderprom"
-
-mw := loadshedder.NewMiddleware(ls, loadshedderprom.NewReporter("myapp"), loadshedder.NewRejectionHandler(5))
-```
-
-**Metrics exported:**
-- `myapp_requests_accepted_total` - Total accepted requests
-- `myapp_requests_rejected_total` - Total rejected requests
-- `myapp_concurrency_running` - Current running requests
-- `myapp_concurrency_waiting` - Current waiting requests
-- `myapp_concurrency_limit` - Configured concurrency limit
-- `myapp_utilization_ratio` - Current utilization (running/limit)
-- `myapp_wait_time_seconds` - Wait time distribution (histogram)
-
-These metrics focus specifically on loadshedder behavior. For general request metrics (latency, response codes), use a separate observability middleware.
-
-For a complete example with alerting rules and queries, see [examples/prometheus](examples/prometheus/).
-
-### Framework-Agnostic Usage (Direct)
+### Using the loadshedder directly
 
 ```go
 package main
@@ -238,11 +71,68 @@ func main() {
 }
 ```
 
-**How Waiting Works:**
-- When `WaitingLimit = 0` (default): immediate rejection when at limit
-- When `WaitingLimit > 0`: requests wait on a semaphore for up to `limit + waitingLimit` total
-- Waiting requests acquire slots as they become available (FIFO via semaphore)
-- Context cancellation immediately releases waiting requests
+### Using the net/http middleware
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+
+    "github.com/pior/loadshedder"
+)
+
+func main() {
+    // Create a loadshedder with a concurrency limit of 100
+    ls := loadshedder.New(loadshedder.Config{
+        Limit: 100,
+    })
+
+    // Create HTTP middleware with slog reporter and default rejection handler
+    reporter := loadshedder.NewLogReporter(nil)
+    rejectionHandler := loadshedder.NewRejectionHandler(5)
+    mw := loadshedder.NewMiddleware(ls, reporter, rejectionHandler)
+
+    // Wrap your handler
+    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Request processed successfully\n")
+    }))
+
+    log.Fatal(http.ListenAndServe(":8080", handler))
+}
+```
+
+**Output Example:**
+```
+INFO Request accepted method=GET path=/api/data remote_addr=127.0.0.1:54321 running=5 waiting=0 limit=100 utilization=0.05 wait_time=0s
+
+WARN Request rejected method=POST path=/api/data remote_addr=127.0.0.1:54322 running=100 waiting=20 limit=100 utilization=1.0 wait_time=45ms
+```
+
+### With Observability - Prometheus Metrics
+
+The `contrib/loadshedderprom` package provides ready-to-use Prometheus integration:
+
+```go
+import "github.com/pior/loadshedder/contrib/loadshedderprom"
+
+mw := loadshedder.NewMiddleware(ls, loadshedderprom.NewReporter("myapp"), nil)
+```
+
+**Metrics exported:**
+- `myapp_requests_accepted_total` - Total accepted requests
+- `myapp_requests_rejected_total` - Total rejected requests
+- `myapp_concurrency_running` - Current running requests
+- `myapp_concurrency_waiting` - Current waiting requests
+- `myapp_concurrency_limit` - Configured concurrency limit
+- `myapp_utilization_ratio` - Current utilization (running/limit)
+- `myapp_wait_time_seconds` - Wait time distribution (histogram)
+
+These metrics focus specifically on loadshedder behavior. For general request metrics (latency, response codes), use a separate observability middleware.
+
+For a complete example with alerting rules and queries, see [examples/prometheus](examples/prometheus/).
 
 ## API Reference
 
@@ -293,7 +183,7 @@ if !token.Accepted() {
 ### HTTP Middleware
 
 ```go
-func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler func(Stats) http.HandlerFunc) *Middleware
+func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler RejectionHandler) *Middleware
 ```
 
 Creates net/http middleware. Panics if reporter or rejectionHandler is nil.

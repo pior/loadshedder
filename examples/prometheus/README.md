@@ -7,8 +7,7 @@ This example demonstrates Prometheus metrics integration for loadshedder using t
 ```go
 import "github.com/pior/loadshedder/contrib/loadshedderprom"
 
-mw := loadshedder.NewMiddleware(ls)
-mw.Reporter = loadshedderprom.NewReporter("myapp")
+mw := loadshedder.NewMiddleware(ls, loadshedderprom.NewReporter("myapp"), nil)
 ```
 
 ## Metrics Exported
