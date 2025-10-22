@@ -196,6 +196,7 @@ mw.Reporter = loadshedderprom.NewReporter("myapp")
 - `myapp_concurrency_waiting` - Current waiting requests
 - `myapp_concurrency_limit` - Configured concurrency limit
 - `myapp_utilization_ratio` - Current utilization (running/limit)
+- `myapp_wait_time_seconds` - Wait time distribution (histogram)
 
 These metrics focus specifically on loadshedder behavior. For general request metrics (latency, response codes), use a separate observability middleware.
 

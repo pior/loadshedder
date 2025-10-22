@@ -69,6 +69,7 @@ func main() {
 	log.Println("  myapp_concurrency_waiting        - Current waiting requests")
 	log.Println("  myapp_concurrency_limit          - Configured concurrency limit")
 	log.Println("  myapp_utilization_ratio          - Current utilization (running/limit)")
+	log.Println("  myapp_wait_time_seconds          - Wait time distribution (histogram)")
 
 	log.Fatal(http.ListenAndServe(":8080", handler))
 }

@@ -21,6 +21,9 @@ type Reporter struct {
 	concurrencyWaiting prometheus.Gauge
 	concurrencyLimit   prometheus.Gauge
 	utilizationRatio   prometheus.Gauge
+
+	// Histogram for wait time distribution
+	waitTimeSeconds prometheus.Histogram
 }
 
 // NewReporter creates a new Prometheus-based reporter with loadshedder metrics.
@@ -57,6 +60,12 @@ func NewReporter(namespace string) *Reporter {
 			Name:      "utilization_ratio",
 			Help:      "Current utilization ratio (running / limit)",
 		}),
+		waitTimeSeconds: promauto.NewHistogram(prometheus.HistogramOpts{
+			Namespace:                   namespace,
+			Name:                        "wait_time_seconds",
+			Help:                        "Time spent waiting for a slot (0 for immediate acceptance/rejection)",
+			NativeHistogramBucketFactor: 1.1,
+		}),
 	}
 
 	return r
@@ -65,12 +74,14 @@ func NewReporter(namespace string) *Reporter {
 // OnAccepted is called when a request is accepted.
 func (r *Reporter) OnAccepted(req *http.Request, stats loadshedder.Stats) {
 	r.requestsAccepted.Inc()
+	r.waitTimeSeconds.Observe(stats.WaitTime.Seconds())
 	r.updateGauges(stats)
 }
 
 // OnRejected is called when a request is rejected.
 func (r *Reporter) OnRejected(req *http.Request, stats loadshedder.Stats) {
 	r.requestsRejected.Inc()
+	r.waitTimeSeconds.Observe(stats.WaitTime.Seconds())
 	r.updateGauges(stats)
 }
 

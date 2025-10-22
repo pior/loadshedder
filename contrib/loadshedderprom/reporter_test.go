@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/pior/loadshedder"
 	"github.com/prometheus/client_golang/prometheus"
@@ -40,6 +41,10 @@ func TestReporter_OnAccepted(t *testing.T) {
 			Namespace: "test",
 			Name:      "utilization_ratio",
 		}),
+		waitTimeSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "test",
+			Name:      "wait_time_seconds",
+		}),
 	}
 
 	registry.MustRegister(reporter.requestsAccepted)
@@ -48,9 +53,10 @@ func TestReporter_OnAccepted(t *testing.T) {
 	registry.MustRegister(reporter.concurrencyWaiting)
 	registry.MustRegister(reporter.concurrencyLimit)
 	registry.MustRegister(reporter.utilizationRatio)
+	registry.MustRegister(reporter.waitTimeSeconds)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", http.NoBody)
-	stats := loadshedder.Stats{Running: 5, Waiting: 2, Limit: 10}
+	stats := loadshedder.Stats{Running: 5, Waiting: 2, Limit: 10, WaitTime: 50 * time.Millisecond}
 
 	reporter.OnAccepted(req, stats)
 
@@ -71,6 +77,11 @@ func TestReporter_OnAccepted(t *testing.T) {
 	}
 	if util := testutil.ToFloat64(reporter.utilizationRatio); util != 0.5 {
 		t.Errorf("expected utilizationRatio = 0.5, got %f", util)
+	}
+
+	// Verify wait time histogram was updated (verify count is 1)
+	if count := testutil.CollectAndCount(reporter.waitTimeSeconds); count != 1 {
+		t.Errorf("expected 1 histogram metric, got %d", count)
 	}
 }
 
@@ -103,6 +114,10 @@ func TestReporter_OnRejected(t *testing.T) {
 			Namespace: "test",
 			Name:      "utilization_ratio",
 		}),
+		waitTimeSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "test",
+			Name:      "wait_time_seconds",
+		}),
 	}
 
 	registry.MustRegister(reporter.requestsAccepted)
@@ -111,9 +126,10 @@ func TestReporter_OnRejected(t *testing.T) {
 	registry.MustRegister(reporter.concurrencyWaiting)
 	registry.MustRegister(reporter.concurrencyLimit)
 	registry.MustRegister(reporter.utilizationRatio)
+	registry.MustRegister(reporter.waitTimeSeconds)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/data", http.NoBody)
-	stats := loadshedder.Stats{Running: 10, Waiting: 5, Limit: 10}
+	stats := loadshedder.Stats{Running: 10, Waiting: 5, Limit: 10, WaitTime: 0}
 
 	reporter.OnRejected(req, stats)
 
@@ -128,6 +144,11 @@ func TestReporter_OnRejected(t *testing.T) {
 	}
 	if util := testutil.ToFloat64(reporter.utilizationRatio); util != 1.0 {
 		t.Errorf("expected utilizationRatio = 1.0, got %f", util)
+	}
+
+	// Verify wait time histogram was updated (with 0 for hard rejection)
+	if count := testutil.CollectAndCount(reporter.waitTimeSeconds); count != 1 {
+		t.Errorf("expected 1 histogram metric, got %d", count)
 	}
 }
 

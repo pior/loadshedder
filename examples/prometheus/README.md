@@ -25,6 +25,9 @@ The reporter exports the following loadshedder-specific metrics:
 - `myapp_concurrency_limit` - Configured concurrency limit
 - `myapp_utilization_ratio` - Current utilization ratio (running / limit)
 
+### Histogram Metrics
+- `myapp_wait_time_seconds` - Time spent waiting for a slot before acceptance/rejection (0 for immediate responses)
+
 **Note:** These metrics focus specifically on loadshedder behavior (concurrency limiting, rejections, capacity). For general request metrics like latency and response codes, use a separate observability middleware.
 
 ## Running the Example
