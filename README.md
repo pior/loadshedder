@@ -140,7 +140,7 @@ func main() {
 }
 ```
 
-### With Observability (net/http)
+### With Observability - Structured Logging (slog)
 
 ```go
 package main
@@ -152,35 +152,55 @@ import (
     "github.com/pior/loadshedder"
 )
 
-type metricsReporter struct{}
-
-func (r *metricsReporter) OnAccepted(req *http.Request, stats loadshedder.Stats) {
-    log.Printf("Accepted: %s %s (running: %d/%d, waiting: %d)",
-        req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
-}
-
-func (r *metricsReporter) OnRejected(req *http.Request, stats loadshedder.Stats) {
-    log.Printf("Rejected: %s %s (running: %d/%d, waiting: %d)",
-        req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
-}
-
-func (r *metricsReporter) OnCompleted(req *http.Request, stats loadshedder.Stats) {
-    log.Printf("Completed: %s %s (running: %d/%d, waiting: %d)",
-        req.Method, req.URL.Path, stats.Running, stats.Limit, stats.Waiting)
-}
-
 func main() {
     ls := loadshedder.New(loadshedder.Config{
-        Limit: 100,
+        Limit:        100,
+        WaitingLimit: 20,
     })
 
     mw := loadshedder.NewMiddleware(ls)
-    mw.Reporter = &metricsReporter{}
+    // Use the built-in slog reporter
+    mw.Reporter = loadshedder.NewLogReporter(nil)
 
-    handler := mw.Handler(http.DefaultServeMux)
+    handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+    }))
+
     log.Fatal(http.ListenAndServe(":8080", handler))
 }
 ```
+
+**Output Example:**
+```
+INFO Request accepted method=GET path=/api/data remote_addr=127.0.0.1:54321 running=5 waiting=0 limit=100 utilization=0.05 wait_time=0s
+WARN Request rejected - concurrency limit exceeded method=POST path=/api/data remote_addr=127.0.0.1:54322 running=100 waiting=20 limit=100 utilization=1.0 wait_time=45ms
+```
+
+The `LogReporter` provides structured logging with all relevant loadshedder fields, including `wait_time` which shows how long the request waited before being accepted or rejected.
+
+### With Observability - Prometheus Metrics
+
+For production environments, see the comprehensive [Prometheus metrics example](examples/prometheus/) which demonstrates:
+- Request counters (accepted, rejected, completed)
+- Real-time concurrency and utilization gauges
+- Ready-to-use alerting rules and queries
+- Loadshedder-specific behavior tracking
+
+```go
+// See examples/prometheus/main.go for complete implementation
+reporter := NewPrometheusReporter("myapp")
+mw.Reporter = reporter
+```
+
+**Metrics exported:**
+- `myapp_requests_accepted_total` - Total accepted requests
+- `myapp_requests_rejected_total` - Total rejected requests
+- `myapp_concurrency_running` - Current running requests
+- `myapp_concurrency_waiting` - Current waiting requests
+- `myapp_concurrency_limit` - Configured concurrency limit
+- `myapp_utilization_ratio` - Current utilization (running/limit)
+
+These metrics focus specifically on loadshedder behavior. For general request metrics (latency, response codes), use a separate observability middleware.
 
 ### Framework-Agnostic Usage (Direct)
 
@@ -237,9 +257,10 @@ type Config struct {
 }
 
 type Stats struct {
-    Running int64 // Current number of running requests
-    Waiting int64 // Current number of waiting requests
-    Limit   int64 // The configured limit
+    Running  int64         // Current number of running requests
+    Waiting  int64         // Current number of waiting requests
+    Limit    int64         // The configured limit
+    WaitTime time.Duration // Time spent waiting for acquisition (0 if not waited)
 }
 
 type Token struct {
@@ -291,9 +312,10 @@ Creates net/http middleware.
 type Reporter interface {
     OnAccepted(r *http.Request, stats Stats)
     OnRejected(r *http.Request, stats Stats)
-    OnCompleted(r *http.Request, stats Stats)
 }
 ```
+
+The Reporter interface provides hooks for observability focused on request **in-flow** (accepted vs rejected). For tracking request completion, latency, or response codes, use a separate application-level observability middleware.
 
 ## Design Decisions
 
@@ -333,7 +355,14 @@ All operations return `Stats` showing current state:
 - `Running`: actual concurrent requests being processed
 - `Waiting`: requests waiting for a slot
 - `Limit`: configured concurrency limit
+- `WaitTime`: duration spent waiting for acquisition (0 for immediate acceptance/rejection)
 - Reporter callbacks receive `Stats` for rich observability
+
+**WaitTime Semantics:**
+- Immediate acceptance (capacity available): WaitTime is near-zero (< 1ms overhead)
+- Waited then accepted: WaitTime shows actual duration waiting for a slot
+- Waited then rejected (context cancelled): WaitTime shows how long it waited before cancellation
+- Hard rejection (exceeds limit + waitingLimit): WaitTime is 0
 
 ### No X-RateLimit-* Headers
 
@@ -344,11 +373,28 @@ This is a per-process limiter. In load-balanced scenarios, per-process limits do
 Minimal overhead with atomic operations and efficient semaphores:
 
 ```
-BenchmarkLimiter-10              	~35 ns/op per acquire+release
-BenchmarkMiddleware-10           	~420 ns/op per HTTP request
+BenchmarkLimiter-8                      205 ns/op     8 B/op    1 allocs/op
+BenchmarkLimiter_NoContention-8         205 ns/op     8 B/op    1 allocs/op
+BenchmarkLimiter_HighContention-8       206 ns/op     8 B/op    1 allocs/op
+BenchmarkLimiter_WithWaiting-8          207 ns/op     8 B/op    1 allocs/op
+BenchmarkLimiter_AcceptedPath-8          36 ns/op     8 B/op    1 allocs/op
+BenchmarkLimiter_RejectedPath-8          14 ns/op     8 B/op    1 allocs/op
+BenchmarkLimiter_Stats-8               0.30 ns/op     0 B/op    0 allocs/op
+BenchmarkMiddleware-8                   925 ns/op  5314 B/op   14 allocs/op
+BenchmarkMiddleware_WithReporter-8      952 ns/op  5314 B/op   14 allocs/op
+BenchmarkMiddleware_Rejected-8          988 ns/op  5535 B/op   15 allocs/op
 ```
 
-Lock-free atomic counters provide minimal overhead. Semaphore operations only occur when at capacity, keeping the happy path fast.
+**Key Performance Characteristics:**
+- **~200 ns/op** for typical parallel acquire+release (lock-free atomic counters)
+- **~36 ns/op** for accepted-only path (no contention, direct acquire+release)
+- **~14 ns/op** for rejected-only path (immediate rejection, no semaphore wait)
+- **~925 ns/op** for HTTP middleware (includes httptest overhead)
+- **Reporter overhead**: <30 ns/op (negligible impact on throughput)
+- **Stats()**: <1 ns/op (simple atomic loads)
+- **Single allocation per operation**: Token allocation only
+
+Lock-free atomic counters provide minimal overhead. Semaphore operations only occur when at capacity, keeping the happy path fast. Performance is consistent across varying contention levels.
 
 ## Testing
 
