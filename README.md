@@ -9,8 +9,6 @@ A modern, framework-agnostic Go library for concurrency limiting with optional r
 
 ## Goal
 
-In distributed systems, clients often retry failed requests, which can exacerbate server overload. When a server is overwhelmed and starts rejecting requests with 429 (Too Many Requests), aggressive client retries can make the situation worse.
-
 `loadshedder` provides simple, predictable concurrency limiting. It enforces a strict concurrency limit and optionally allows requests to wait in a bounded queue. This reduces unnecessary 429 responses during brief traffic spikes while protecting against sustained overload—improving overall system stability without complex heuristics.
 
 ## Features
