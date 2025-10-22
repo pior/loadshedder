@@ -41,7 +41,7 @@ func (r *LogReporter) Accepted(req *http.Request, stats Stats) {
 func (r *LogReporter) Rejected(req *http.Request, stats Stats) {
 	r.logger.WarnContext(
 		req.Context(),
-		"Request rejected - concurrency limit exceeded",
+		"Request rejected",
 		slog.String("method", req.Method),
 		slog.String("path", req.URL.Path),
 		slog.String("remote_addr", req.RemoteAddr),
