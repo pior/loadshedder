@@ -113,3 +113,32 @@ func TestLogReporter_NilLogger(t *testing.T) {
 	reporter.Accepted(req, stats)
 	reporter.Rejected(req, stats)
 }
+
+func TestNullReporter(t *testing.T) {
+	reporter := NewNullReporter()
+
+	req := httptest.NewRequest(http.MethodGet, "/test", http.NoBody)
+	stats := Stats{Running: 1, Waiting: 0, Limit: 10}
+
+	// Should not panic and do nothing
+	reporter.Accepted(req, stats)
+	reporter.Rejected(req, stats)
+}
+
+func TestMiddleware_DefaultReporter(t *testing.T) {
+	// When nil reporter is passed, should use NullReporter
+	limiter := New(Config{Limit: 10})
+	mw := NewMiddleware(limiter, nil, NewRejectionHandler(5))
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+}

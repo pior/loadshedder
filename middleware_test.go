@@ -24,7 +24,7 @@ func (tr *testReporter) Rejected(r *http.Request, stats Stats) {
 
 func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
 	limiter := New(Config{Limit: 5})
-	mw := NewMiddleware(limiter, NewLogReporter(nil), NewRejectionHandler(5))
+	mw := NewMiddleware(limiter, NewLogReporter(nil), nil)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -43,7 +43,7 @@ func TestMiddleware_AcceptsUnderLimit(t *testing.T) {
 
 func TestMiddleware_RejectsOverLimit(t *testing.T) {
 	limiter := New(Config{Limit: 2})
-	mw := NewMiddleware(limiter, NewLogReporter(nil), NewRejectionHandler(5))
+	mw := NewMiddleware(limiter, NewLogReporter(nil), nil)
 
 	blocker := make(chan struct{})
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,7 @@ func TestMiddleware_RejectsOverLimit(t *testing.T) {
 func TestMiddleware_WithReporter(t *testing.T) {
 	limiter := New(Config{Limit: 2})
 	reporter := &testReporter{}
-	mw := NewMiddleware(limiter, reporter, NewRejectionHandler(5))
+	mw := NewMiddleware(limiter, reporter, nil)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond)
@@ -162,7 +162,7 @@ func TestMiddleware_CustomRejectionHandler(t *testing.T) {
 
 func BenchmarkMiddleware(b *testing.B) {
 	limiter := New(Config{Limit: 100})
-	mw := NewMiddleware(limiter, NewLogReporter(nil), NewRejectionHandler(5))
+	mw := NewMiddleware(limiter, nil, nil)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -180,7 +180,7 @@ func BenchmarkMiddleware(b *testing.B) {
 
 func BenchmarkMiddleware_WithReporter(b *testing.B) {
 	limiter := New(Config{Limit: 100})
-	mw := NewMiddleware(limiter, &testReporter{}, NewRejectionHandler(5))
+	mw := NewMiddleware(limiter, nil, nil)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -198,7 +198,7 @@ func BenchmarkMiddleware_WithReporter(b *testing.B) {
 
 func BenchmarkMiddleware_Rejected(b *testing.B) {
 	limiter := New(Config{Limit: 1})
-	mw := NewMiddleware(limiter, NewLogReporter(nil), NewRejectionHandler(5))
+	mw := NewMiddleware(limiter, nil, nil)
 
 	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

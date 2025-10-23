@@ -1,6 +1,7 @@
 package loadshedder
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 )
@@ -15,6 +16,7 @@ type Middleware struct {
 	loadshedder      *Loadshedder
 	reporter         Reporter
 	rejectionHandler RejectionHandler
+	logger           *slog.Logger
 }
 
 // Reporter provides hooks for observability into the middleware's behavior.
@@ -27,11 +29,11 @@ type Reporter interface {
 }
 
 // NewMiddleware creates a new HTTP middleware with the given loadshedder, reporter, and rejection handler.
-// If reporter is nil, a default LogReporter is used.
+// If reporter is nil, a NullReporter is used (no observability).
 // If rejectionHandler is nil, a default handler responding with HTTP 429, and a Retry-After header set to 5s is used.
 func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler RejectionHandler) *Middleware {
 	if reporter == nil {
-		reporter = NewLogReporter(nil)
+		reporter = NewNullReporter()
 	}
 	if rejectionHandler == nil {
 		retryAfter := 5
@@ -42,24 +44,51 @@ func NewMiddleware(loadshedder *Loadshedder, reporter Reporter, rejectionHandler
 		loadshedder:      loadshedder,
 		reporter:         reporter,
 		rejectionHandler: rejectionHandler,
+		logger:           slog.Default(),
 	}
 }
 
 // Handler wraps the given http.Handler with concurrency limiting.
+// Reporter panics are caught and suppressed to prevent interference with request processing.
+// Handler panics propagate after ensuring token cleanup.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stats, token := m.loadshedder.Acquire(r.Context())
+
 		if !token.Accepted() {
-			m.reporter.Rejected(r, stats)
+			m.reportRejected(r, stats)
+
 			m.rejectionHandler(stats).ServeHTTP(w, r)
 			return
 		}
 
+		// Ensure token is always released, even if handler panics
 		defer m.loadshedder.Release(token)
 
-		m.reporter.Accepted(r, stats)
+		m.reportAccepted(r, stats)
+
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (m *Middleware) reportAccepted(r *http.Request, stats Stats) {
+	defer func() {
+		if err := recover(); err != nil {
+			m.logger.Error("loadshedder: reporter panic on accepted", "error", err)
+		}
+	}()
+
+	m.reporter.Accepted(r, stats)
+}
+
+func (m *Middleware) reportRejected(r *http.Request, stats Stats) {
+	defer func() {
+		if err := recover(); err != nil {
+			m.logger.Error("loadshedder: reporter panic on rejected", "error", err)
+		}
+	}()
+
+	m.reporter.Rejected(r, stats)
 }
 
 // NewRejectionHandler creates a rejection handler function that responds with HTTP 429
